@@ -1621,55 +1621,96 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     nor wrap) plus a narrow-pane minor and a long one-liner, fixed. Deferred minors: a "Needs you" row lands on the
     oldest question when two subagents wait; the breadcrumb's label doesn't shorten in very narrow panes; the
     subagents and shells popovers share a frame shape not yet one helper; `PlanDraft.title` is now unused.
-- **Chore 24 (queued, not built): a scene that ends on the folded approved plan** (your words, 2026-11-26: "queue it
-  as a chore", after the landing update for v0.13.9). The `agent-plan-approved` scene
-  (src/ui_shots/agent_activity.rs) ends with the plan opened again, so the landing's "Plan approved" image had to be
-  cropped from `agent-plan-long-command`. Add a scene (or a last frame) that ends on the folded one-line card,
-  `☰ Plan approved · auto-accept edits ✓ … Show plan ›`, with a check on that line; then point the landing's
-  `plan-approved` shot at it (`pnpm sync-shots` in fuxx-landing) and ship the site.
-- **Chore 25 (queued, not built; design to confirm): a calmer, shorter permission card** (your words, 2026-11-26,
-  with a picture of a Bash request for a long `git commit -F - <<'MSG' …`: "redesign this."). Today the card
-  (src/agent_rows.rs, the open permission card) shows "Claude wants to run Bash", the command in a block, then the
-  tool's raw JSON input (the same command again, escaped, plus timeout and description), three large buttons and a
-  hint line, all on a red-tinted fill. Proposed: the title is the tool's own description ("Create the commit and
-  show it…") with the tool as a small tag (`Bash`); the command once, in mono at the chat's small size, folded
-  after about 6 lines ("… 12 more lines · Show all ▾"); no raw JSON (only for a tool with no readable form, folded
-  behind "Show input"); the answers in one row of 24 pt buttons like the plan card's (chore 23): `Allow ⏎`,
-  `Always allow git commit *`, `Deny`, with "or type to redirect" quiet on the same row; attention shown by a thin
-  accent border and the shield icon, not a tinted fill. Pin it in the permission scenes (short command, long
-  heredoc, a non-Bash tool, a narrow pane).
-- **Chore 26 (queued, not built): approve a plan into Auto mode** (your words, 2026-11-26: "on plan mode, no accept
-  and goes auto."). The plan card offers auto-accept edits, approve, keep planning; it has no "approve and switch to
-  Auto". Add it (as Claude Code's own plan approval does), switching the session's mode to Auto, the mode picker
-  showing Auto after. Check how Claude's stream-json takes a mode with the plan answer (provider code in
-  src/providers/claude.rs).
-- **Chore 27 (queued, not built): switching to Auto takes effect on the next action** (your words, 2026-11-26: "when
-  I accept the plan mode with accepts edits, then I switch to mode Auto, next action is not auto. check when I change
-  it to auto on a normal mode."). After approving a plan with accept edits and then picking Auto in the mode
-  picker, the next tool call still asked. Debug first (does fuxx send the mode change to the running agent, and does
-  the agent apply it mid-session; also from a plain session, not only after a plan); fix; a test with the recorded
-  control messages.
-- **Chore 28 (queued, not built): a thin blinking caret in the commit box** (your words, 2026-11-26, with two
-  pictures: "make the cursor on this [the commit box's 'Describe your change', an orange underline cursor] to be
-  like this [the branch picker's input, a thin vertical bar] with blinking, do not put the glow cursor, we need to
-  keep performance brilliant"). The commit box's caret becomes the branch picker's thin bar, blinking at the
-  system's rate, no glow; the blink repaints only the caret's own small area (no whole-view repaints).
-- **Chore 29 (queued, not built): a little padding inside every text input** (your words, 2026-11-26: "any input
-  text, make it has small padding inside so its neat"). Every single-line and multi-line input (branch picker,
-  commit box, search fields, settings fields, rename, the agent box) gets the same small inner padding from one
-  shared token, so text and caret never touch the border. Search for the input components first and set it in one
-  place; pin it in the scenes that show inputs.
-- **Chore 30 (queued, not built): chevrons, not arrow glyphs, in the confirmation cards** (your words, 2026-11-26:
-  "for all popup confirmation, can you make all the arrows to be chevron?"). The cards that wait for you (the
-  permission card, the plan card, the question card, and card_view's folds) draw their fold and open arrows as text
-  glyphs (`Show all ▾`, `Show less ▴`, `Show plan ›`, card_view's `▾ Show less`). Make every one a Lucide chevron
-  icon (ChevronDown / ChevronRight from src/icons.rs; add Lucide's chevron-up for "Show less"), the same size and
-  colour as the link's text, and the same in chores 25 and 23's new rows. Keyboard legends (`← →`) and the `→` in
-  the answer text sent to the agent stay as they are. Pin one fold link per card in its scene.
-- **Chore 31 (queued, not built): only the status line spins** (your words, 2026-11-26, with a picture of three
-  spinners at once — the chat's "Cultivating…", the box's "To <subagent> · via Main" chip, and the 🤖 corner tab:
-  "in here still too much loading indicator" → my sketch → "yes, build 31 too and release with the rest").
-  Follows chore 17. While the chat's status line shows, it is the only running mark: the "To … · via Main" chip
-  shows the static 🤖 icon (it says where your message goes, not that work runs); the 🤖 corner tab shows only its
-  `done/all` count, its arc back only while the status line isn't shown (e.g. scrolled away). Pin it in a scene
-  with a running subagent and the relay chip.
+- **Chore 24: a scene that ends on the folded approved plan** (your words, 2026-11-26: "queue it as a chore", after
+  the landing update for v0.13.9; built with the rest: "include 24 too"). **Built:** a new scene,
+  `agent-plan-approved-folded`, ends on the folded one-line card `☰ Plan approved · auto-accept edits ✓ … Show plan`
+  (chore 30's chevron), checking its words, the chevron on the line and no plan body drawn; chore 26's
+  `agent-plan-approved-auto` ends the same way on "Plan approved · Auto mode ✓". `agent-plan-approved` still checks
+  the plan opened again. Commit `af083d6`. **Left for after the release (the landing side, done separately):** point the landing's `plan-approved`
+  shot at `agent-plan-approved-folded` (`pnpm sync-shots` in fuxx-landing) and ship the site.
+  - [ ] Your check: the landing's "Plan approved" picture comes from the new scene, uncropped.
+- **Chore 25: a calmer, shorter permission card** (your words, 2026-11-26, with a picture of a Bash request for a
+  long `git commit -F - <<'MSG' …`: "redesign this."; the design below confirmed 2026-11-26: "yes both, build 25 to
+  30 and release"). **Built** (`agent_permission_card.rs`): the title is the tool's own description ("Create the
+  commit and show it") with the tool as a small tag (`Bash`; a subagent's reads `Reader · Bash`; no description: "Claude
+  wants to run Write", no tag); the command once, mono at the chat's small size, folded after 6 lines ("… 7 more
+  lines · Show all" and a chevron; Show less folds it back); no raw JSON for Bash (Claude leaves its input out, the
+  command and description say it all); any other tool's input folded behind "Show input"; the answers in one row of
+  24 pt buttons shared with the plan card (`agent_card_parts.rs`): `Allow ⏎`, `Always allow git commit *` (a Bash
+  rule now reads as its command, `:*` as " *"), `Deny`, and "or type to redirect" quiet on the row; a 1.5 pt accent
+  edge and the shield on the panel fill, no tinted fill. New field `about` on the permission event (Claude: a Bash
+  call's `description`). Scenes: `agent-permission-short`, `-heredoc`, `-input`, `-narrow`. Commit `4ccfb3d`.
+  - **Rulings:** no tag without a description (the title already names the tool); Write/Edit keep their input
+    behind "Show input" (a file name alone isn't the content); the fold shares chore 23's open state with the
+    answered line.
+  - [ ] Your check: a long heredoc commit asks with one short card; Show all / Show less; an edit's "Show input".
+- **Chore 26: approve a plan into Auto mode** (your words, 2026-11-26: "on plan mode, no accept and goes auto."; you
+  confirmed 2026-11-26, "yes both": an answer "Approve · Auto mode" that approves and switches the session to Auto,
+  as Claude Code's own plan approval offers). **Protocol** (recorded, `claude-plan-auto.jsonl`, Claude Code 2.1.331):
+  the `ExitPlanMode` prompt answered `allow` with `updatedPermissions: [{"type":"setMode","mode":"auto",
+  "destination":"session"}]` leaves plan mode into Auto: `system/status permissionMode: "auto"` at once, and the Write
+  after it asks nothing. **Built:** the plan card's row reads `Approve · auto-accept ⏎`, `Approve · Auto mode`,
+  `Approve`, `Keep planning`; the new answer (`Answer::ApprovedInto`, `Action::AllowInto`, the provider's
+  `plan_into_mode`, Claude: `auto`) sends that allow, the mode chip shows Auto at once, and the card folds to "Plan
+  approved · Auto mode ✓". Scene `agent-plan-approved-auto`. Commit `e12608d`.
+  - **Ruling:** the new answer sits second, after the Enter default (auto-accept), so Enter keeps its meaning.
+  - [ ] Your check: approve a real plan with Approve · Auto mode; the chip reads Auto and the next actions don't ask.
+- **Chore 27: switching to Auto takes effect on the next action** (your words, 2026-11-26: "when I accept the plan
+  mode with accepts edits, then I switch to mode Auto, next action is not auto. check when I change it to auto on a
+  normal mode."). **Cause** (traced, then recorded): fuxx held any mode chosen while a turn ran or a card waited
+  (`step_for` → after the turn, M11ak's "a change never cuts the turn"): the chip showed Auto, but Claude was only
+  told when the turn ended, so the rest of the turn ran in the old mode. The same from a plain session mid-turn;
+  idle, it was already live. Claude takes the change mid-turn: recorded (`claude-mode-mid-turn.jsonl`), Auto asked
+  at the turn's Write prompt is answered `{"mode":"auto"}`, reported at once, and the turn's next Write asks nothing
+  (the Agent SDK docs say the same). **Built:** a provider says it takes a mode mid-turn (`mode_mid_turn`, Claude:
+  yes; agy still waits), so the change is sent at once; the chip shows the asked mode at once. Tests on `step_for`
+  and on the recorded control messages; the recorder gained `mode-mid-turn` and `plan-auto`. Commits `8b1e0ca`,
+  `868dca3`.
+  - [ ] Your check: approve a plan with accept edits, pick Auto mid-turn: the next tool call doesn't ask; the same
+    from a plain session.
+- **Chore 28: a thin blinking caret in the commit box** (your words, 2026-11-26: "make the cursor on this to be like
+  this with blinking, do not put the glow cursor, we need to keep performance brilliant"). **Built:** the commit box
+  (a bare `Composer`) draws the one-line boxes' thin bar (`set_plain_caret`), blinking by the branch picker's rule
+  (`caret_blink::Blinker`, now shared with `NameInput`): one timer at a time that redraws only the box; no glide,
+  glow, trail or sparks. Pinned in `changes-commit` (a bar 2 pt wide, no breath frames). Commit `9ef8d2a`.
+  - **Ruling:** the same blink rule as the one-line boxes (solid with the cursor-glow setting off, in the
+    background, or after 20 s idle).
+  - [ ] Your check: the commit box's caret is a thin blinking bar, nothing glows.
+- **Chore 29: a little padding inside every text input** (your words, 2026-11-26: "any input text, make it has small
+  padding inside so its neat"). **Built:** one token, `ui_tokens::input` (6 pt across, 2 pt up and down), set where
+  the one-line field draws its frame (`NameInput`: rename, palette, branch picker, search and settings fields, host
+  picker); the filter boxes' placeholders follow it. Pinned in `branch-switcher`. Commit `a01d116`.
+  - **Ruling:** the bare fields (the agent box, the commit box, the right sidebar's filter, the browser's address)
+    sit in boxes that already pad them, so the token is set once, in the frame.
+  - [ ] Your check: the rename box, the branch picker and the palette's field have room round their text and caret.
+- **Chore 30: chevrons, not arrow glyphs, in the confirmation cards** (your words, 2026-11-26: "for all popup
+  confirmation, can you make all the arrows to be chevron?"). **Built:** Lucide's chevron-up added; one shared fold
+  link (`agent_card_parts.rs`: the words, then a chevron at their size and colour): the plan card's `Show plan`
+  (right), `Show all` (down), `Show less` (up), the permission card's folds (chore 25), and the shell card's fold row
+  (`Show less` up, `N earlier lines` right, drawn before the words where the glyph was). Keyboard legends and the `→`
+  in answers sent to the agent kept. A test keeps arrow glyphs out of the cards' sources; pinned in
+  `agent-plan-approved`, the permission scenes and `shell-cards`. Commits `35000d5`, `1a0872d`.
+  - [ ] Your check: every fold link on the cards ends (or, on a shell card, starts) with a chevron.
+- **Chore 31: only the chat's running mark spins** (your words, 2026-11-26, with a picture of three spinners at once:
+  "in here still too much loading indicator" → "yes, build 31 too and release with the rest"). **Built:** chore
+  17's rule now reaches a subagent's view: the chat's running mark is Main's status line, or a live subagent's own
+  view (its header and rows), one shared rule (`chat_mark_shown`). While it shows, the "To … · via Main" chip shows a
+  still 🤖, the folder tab no mark, and the 🤖 corner tab only its count; the tab spins (a running subagent's arc)
+  only while the chat shows no mark. The review found the folder tab's red "Waiting" lost in a subagent's view: it
+  now hides there only while work runs. Pinned in `agent-lanes-relay` and `agent-subagents-tab`. Commits `10f87f2`,
+  `868dca3`, `15ec0d5`.
+  - **Rulings:** the relay chip lives only in a subagent's view, where Main's status line never shows, so the rule
+    takes that view as the chat's mark; the subagent's own header arc stays.
+  - [ ] Your check: inside a running subagent, one spinner (its own); the relay chip shows 🤖; a wait elsewhere
+    still shows red on the folder tab.
+- **Checks for chores 24–31.** Tests 3018 green. No new clippy warnings in the files touched. `cargo fmt --check`
+  clean. Scenes since `5ba8ffc`: all passed but `agent-tab-wide` (display-dependent, as on master); two scenes that
+  pinned the old behaviour (`agent-box-mode-waits`, `agent-subagents-tab`) now pin the new. New scenes:
+  `agent-plan-approved-auto`, `agent-plan-approved-folded`, `agent-permission-short`, `-heredoc`, `-input`,
+  `-narrow`. The visual fingerprints (`tests/ui-shots-ref`) were not refreshed. Plan:
+  `docs/superpowers/plans/2026-11-26-chores-25-30.md`.
+  - **Review** (one whole-change review on Opus): 1 Important (the folder tab's Waiting lost in a subagent's view),
+    fixed with a test first. Deferred minors: "Hide input" uses chevron-up and the open input is still capped with
+    "…"; chore 29 is pinned only on the branch picker; `toggle_input` repeats `toggle_command`'s shape; in Main with
+    no status line a background subagent's arc shows in its tab and its chat row; approving into Auto while another
+    mode change is pending shows that one until Claude reports Auto.

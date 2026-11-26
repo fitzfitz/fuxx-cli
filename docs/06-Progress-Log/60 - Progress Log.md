@@ -44,6 +44,23 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — Chores 24–31: a calmer permission card, Auto that takes, plan into Auto, chevrons, one spinner
+
+- **Did:** eight chores on master (note 93). 24: a scene that ends on the folded approved plan
+  (`agent-plan-approved-folded`; the landing's switch to it is left for after the release). 25: the permission card
+  titled by the tool's own description, the command once and folded after 6 lines, raw input only behind "Show
+  input", one row of slim answers, an accent edge. 26: "Approve · Auto mode" on the plan card. 27: a mode picked
+  mid-turn now reaches Claude at once (it was held until the turn ended). 28: a thin blinking caret in the commit
+  box. 29: one inner padding token for the one-line fields. 30: Lucide chevrons instead of ▾ ▴ › on the cards'
+  folds. 31: only the chat's running mark spins (the relay chip a still 🤖, the folder tab and the 🤖 tab quiet
+  beside it). One Opus review; its 1 Important finding fixed. Tests 3018. Plan:
+  `docs/superpowers/plans/2026-11-26-chores-25-30.md`.
+- **Learned:** Claude Code takes `set_permission_mode` mid-turn and applies it to the turn's next tool call, and an
+  `ExitPlanMode` allow can carry `updatedPermissions: [{setMode: auto, destination: session}]` (both recorded,
+  `claude-mode-mid-turn.jsonl`, `claude-plan-auto.jsonl`). In GPUI an absolutely placed child is placed inside its
+  parent's border, and a flex column stretches a child across unless it says `self_start`.
+- **Next task:** your on-screen checks (note 93, chores 24–31), then the release you asked for.
+
 ### 2026-11-26 — v0.13.9 released
 
 - **What:** your words: "build 17 to 21 and release with 16", then 22 and 23 added the same way. Version 0.13.9
