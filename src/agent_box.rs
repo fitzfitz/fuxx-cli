@@ -1793,7 +1793,7 @@ impl AgentTab {
 
     /// The tabs at the folder-tab row's right, flush with the box's edge (the folder tab
     /// mirrored, its step on their left): the shells tab (chore 16) then the plan tab, in one
-    /// tab, with the popover of either hung from its right edge: the step and the tab, or
+    /// tab, with the popover of either hung from its right edge: the tab with its step, or
     /// nothing without either.
     fn corner_tabs(&self, c: &Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         use crate::card_view::{EDGE, PILL_GAP, TAB_PAD};
@@ -1805,7 +1805,10 @@ impl AgentTab {
             return Vec::new();
         }
         let (outer, edge) = (hsla(c.outer), hsla(c.outer_edge));
-        let step = div().flex_none().mr(px(-EDGE)).size(px(16.)).child(
+        // Drawn after the tab (chore 18: "the line is offside"), as the folder tab's step is
+        // after its tab: its wedge covers the tab's straight left edge where the curve leaves
+        // it. It hangs at the wrapper's left, its right 1 pt over the tab's edge.
+        let step = div().absolute().left_0().bottom_0().size(px(16.)).child(
             gpui::canvas(
                 |_, _, _| (),
                 move |bounds, _, window, cx| {
@@ -1840,8 +1843,13 @@ impl AgentTab {
             .relative()
             .children(popover.map(|p| div().absolute().top(px(TAB_PAD - EDGE)).right_0().child(p)));
         vec![
-            step.into_any_element(),
-            self.marked("corner-tabs", shell).into_any_element(),
+            div()
+                .relative()
+                .flex_none()
+                .pl(px(16. - EDGE))
+                .child(self.marked("corner-tabs", shell))
+                .child(step)
+                .into_any_element(),
         ]
     }
 

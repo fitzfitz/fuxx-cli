@@ -758,6 +758,7 @@ fn plan_scene(name: &'static str, dims: (f32, f32), long: bool) {
             (shell.right() - outer.right()).abs() < px(1.5),
             "{n}: the plan tab ends at the box's right edge ({shell:?} vs {outer:?})"
         );
+        corner_step_meets_the_line(n, cx, window, tab, dims);
         click(cx, window, burger);
         let _ = frame_fresh(cx, window);
         assert_eq!(
@@ -776,6 +777,53 @@ fn plan_scene(name: &'static str, dims: (f32, f32), long: bool) {
             "{n}: the popover ends at the box's right edge ({popover:?} vs {outer:?})"
         );
     });
+}
+
+/// Chore 18 ("the line is offside"): the corner tabs' step, as the folder tab's, carries its
+/// tab's edge down into the curve alone. Over the 2 pt above the box's top line, the tab's left
+/// edge column is the box's fill (no straight line running on beside the curve), and the box's
+/// top line goes on under the step's left half. The probes sit inside the 1 pt edges, so the
+/// tab's left edge is the column just left of `corner-tabs`, the box's top line the row just
+/// above `outer`.
+fn corner_step_meets_the_line(
+    n: &str,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    tab: &Entity<AgentTab>,
+    dims: (f32, f32),
+) {
+    let shot = frame_fresh(cx, window);
+    let c = cx.read(|cx| {
+        crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
+    });
+    let size = size(px(dims.0), px(dims.1));
+    let shell = part(cx, tab, n, "corner-tabs");
+    let outer = part(cx, tab, n, "outer");
+    let (edge_x, line_y) = (f32::from(shell.left()) - 1.0, f32::from(outer.top()) - 1.0);
+    let scale = shot.width as f32 / dims.0;
+    let device = 1.0 / scale;
+    let mut y = line_y - 2.0;
+    while y < line_y {
+        let mut x = edge_x;
+        while x < edge_x + 1.0 {
+            let p = super::pixel_at(&shot, size, x, y);
+            assert!(
+                super::near(p, c.outer),
+                "{n}: the box's fill at ({x}, {y}) beside the step's curve, not its tab's edge ({p:?})"
+            );
+            x += device;
+        }
+        y += device;
+    }
+    let mut x = edge_x - crate::terminal_view::TAB_STEP;
+    while x < edge_x - crate::terminal_view::TAB_STEP / 2.0 {
+        let p = super::pixel_at(&shot, size, x, line_y);
+        assert!(
+            super::near(p, c.outer_edge),
+            "{n}: the box's top line at ({x}, {line_y}) under the step ({p:?})"
+        );
+        x += device;
+    }
 }
 
 /// The running turn, on the chat's status line: "Cultivating… · Running tests …", and under it
