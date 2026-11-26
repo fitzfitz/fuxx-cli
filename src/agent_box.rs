@@ -59,19 +59,23 @@ const SEND: f32 = 34.0;
 /// As the inner box's gap (`card_view::OUTER_INSET`), so the curves stay concentric.
 const SEND_INSET: f32 = crate::card_view::OUTER_INSET;
 /// The cut's distance round the circle (your words: "add gap between chatbox with button"; the
-/// designer: 6, twice the box's 3 pt step), and the square it is cut with: from the outer
-/// box's inside corner to the cut's straight edges.
+/// designer: 6, twice the box's 3 pt step).
 /// 8 since your note (2026-11-22, "add more" round the circle).
 const NOTCH_GAP: f32 = 8.0;
-const NOTCH: f32 = SEND_INSET + SEND + NOTCH_GAP;
+/// The room right of the bottom row's last pill, from the box's inside: it ends 8 before the cut
+/// round the circle (the circle flush with the box's corner, chore 33).
+const MODE_ROOM: f32 = SEND + NOTCH_GAP + 8. - CONTROL_INSET;
 /// The inner box's corners where it meets the cut: 14, as round as your reference's
 /// (2026-11-22: one smooth wave round the button). The cut is one shape under the box's text
 /// (`notch`), so a round joint covers nothing.
 const JOINT: f32 = 14.0;
 /// Round the circle with the same centre (your words: "add more radius on the right bottom chat
-/// box so the radius rounded and the button circle match"): its radius, the 3 around it, the
-/// outer box's 1 px edge.
-const OUTER_BOTTOM_RADIUS: f32 = SEND / 2.0 + SEND_INSET + crate::card_view::EDGE;
+/// box so the radius rounded and the button circle match"): its radius and the inset round it
+/// (the outer box's 1 pt edge is drawn over its padding, so it adds nothing: chore 33).
+const OUTER_BOTTOM_RADIUS: f32 = SEND / 2.0 + SEND_INSET;
+/// More room between the clock and the gauge (chore 33, measured): their round glyphs fill their
+/// boxes, so their ink met 2 pt closer than the rest of the row's.
+const CLOCK_GAUGE_GAP: f32 = 2.0;
 /// The `+` and send buttons' side.
 const BUTTON: f32 = 28.0;
 /// A menu: its width, and the gap between it and the chip it opens up from.
@@ -145,8 +149,9 @@ pub(crate) const USAGE_MAX_H: f32 = 480.0;
 /// The mode menu's width (its rows carry a description).
 const MODE_MENU_WIDTH: f32 = 300.0;
 
-/// The warning dot on the model chip.
+/// The warning dot on the clock and the gauge, and the ring round it (chore 33).
 const LIMIT_DOT: f32 = 6.0;
+const BADGE_RING: f32 = 2.0;
 const SEND_GLYPH: &str = "\u{27a4}";
 /// The send circle while a question waits (batch 3, chore 8; the lead designer): a check (Enter
 /// answers, it doesn't send), its words in the tooltip.
@@ -1223,6 +1228,7 @@ impl AgentTab {
                     .id("agent-clock-button")
                     .relative()
                     .flex_none()
+                    .mr(px(CLOCK_GAUGE_GAP))
                     .size(px(BUTTON))
                     .flex()
                     .items_center()
@@ -1235,18 +1241,7 @@ impl AgentTab {
                     )),
             )
             .when(context_warn, |d| {
-                d.child(
-                    self.marked(
-                        "context-warning",
-                        div()
-                            .absolute()
-                            .top(px(4.))
-                            .right(px(4.))
-                            .size(px(LIMIT_DOT))
-                            .rounded_full()
-                            .bg(hsla(warn)),
-                    ),
-                )
+                d.child(self.marked("context-warning", badge(warn, c.box_fill)))
             })
             .hover(move |s| s.bg(hsla(clock_hover_fill)))
             .on_hover(cx.listener(|this, on: &bool, _, cx| {
@@ -1290,18 +1285,7 @@ impl AgentTab {
                     )),
             )
             .when(texts.limit_warning, |d| {
-                d.child(
-                    self.marked(
-                        "limit-warning",
-                        div()
-                            .absolute()
-                            .top(px(4.))
-                            .right(px(4.))
-                            .size(px(LIMIT_DOT))
-                            .rounded_full()
-                            .bg(hsla(warn)),
-                    ),
-                )
+                d.child(self.marked("limit-warning", badge(warn, c.box_fill)))
             })
             // A rest on it opens its panel (the 2026-11-24 chores: hover, not click; the panel
             // says more than a "Usage" tip would, so it has none).
@@ -1352,8 +1336,8 @@ impl AgentTab {
                 .id(id)
                 .absolute()
                 // (Placed from the outer box's outside: its 1 px edge, then 3.)
-                .right(px(SEND_INSET + crate::card_view::EDGE))
-                .bottom(px(SEND_INSET + crate::card_view::EDGE))
+                .right(px(SEND_INSET))
+                .bottom(px(SEND_INSET))
                 .size(px(SEND))
                 .flex()
                 .items_center()
@@ -1370,7 +1354,7 @@ impl AgentTab {
                 (
                     BOX_X - CONTROL_INSET,
                     BOX_X - CONTROL_INSET - (BUTTON - CONTROL_ICON) / 2.,
-                    NOTCH + 8. - 2. * CONTROL_INSET,
+                    MODE_ROOM,
                 ),
                 cx,
             ),
@@ -1414,17 +1398,18 @@ impl AgentTab {
                     .into_any_element()
             }
             Some(label) => {
-                let (square, pressable) = match label {
-                    "Stopping\u{2026}" => (c.dim, false),
-                    "Force stop" => (c.ask_edge, true),
-                    _ => (c.text, true),
+                // Chore 33: solid, the square light on it (dark on a dark theme); Stopping… as
+                // quiet as the empty send.
+                let (fill, square, pressable) = match label {
+                    "Stopping\u{2026}" => (c.send_empty, c.dim, false),
+                    "Force stop" => (c.stop_fill, c.force_square, true),
+                    _ => (c.stop_fill, c.stop_square, true),
                 };
                 let tip =
                     SharedString::from(label.replace("  esc", " (esc)").replace("\u{25a0} ", ""));
-                // Reddish while the agent works (your words, 2026-11-22).
                 let control = c.stop_hover;
                 self.marked("send", circle("agent-stop"))
-                    .bg(hsla(c.stop_fill))
+                    .bg(hsla(fill))
                     .child(div().size(px(12.)).rounded(px(2.)).bg(hsla(square)))
                     .tooltip(move |_, cx| {
                         cx.new(|_| crate::sidebar_toggle::Tip(tip.clone())).into()
@@ -1543,7 +1528,7 @@ impl AgentTab {
                             .child(div().flex_1())
                             .children(mode)
                             // The mode pill ends 8 before the notch's edge.
-                            .child(div().flex_none().w(px(NOTCH + 8. - 2. * CONTROL_INSET))),
+                            .child(div().flex_none().w(px(MODE_ROOM))),
                     );
                 let mut v: Vec<AnyElement> = Vec::new();
                 v.extend(
@@ -1699,7 +1684,7 @@ impl AgentTab {
             .rounded_t(px(13.))
             .rounded_bl(px(BUTTON / 2. + CONTROL_INSET + 1.))
             // Concentric with the send notch's corner, so the notch hides it there.
-            .rounded_br(px(OUTER_BOTTOM_RADIUS - EDGE - (OUTER_INSET - 1.)))
+            .rounded_br(px(OUTER_BOTTOM_RADIUS - (OUTER_INSET - 1.)))
             .bg(gpui::linear_gradient(
                 180.,
                 gpui::linear_color_stop(hsla(c.glow_top), 0.),
@@ -2476,7 +2461,24 @@ impl AgentTab {
     }
 }
 
-/// A chip on the box's bottom row: quiet text, no edge.
+/// A warning dot on a bottom-row button (the clock's, the gauge's): `LIMIT_DOT` of `warn` in a
+/// `BADGE_RING` ring of the box's own colour (`ring`), so it reads cut out of the icon it sits
+/// on (chore 33); the dot where it always was, the ring round it.
+fn badge(
+    warn: alacritty_terminal::vte::ansi::Rgb,
+    ring: alacritty_terminal::vte::ansi::Rgb,
+) -> Div {
+    div()
+        .absolute()
+        .top(px(4. - BADGE_RING))
+        .right(px(4. - BADGE_RING))
+        .size(px(LIMIT_DOT + 2. * BADGE_RING))
+        .rounded_full()
+        .border(px(BADGE_RING))
+        .border_color(hsla(ring))
+        .bg(hsla(warn))
+}
+
 /// How far the send notch's shape reaches in from the box's bottom-right corner (the send
 /// circle's inset and size, the gap round it and a `JOINT` corner), and how far it runs past it.
 const NOTCH_REACH: f32 = SEND + NOTCH_GAP + JOINT + SEND_INSET - crate::card_view::OUTER_INSET;

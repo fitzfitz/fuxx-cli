@@ -1035,11 +1035,14 @@ pub struct Colors {
     /// The box's controls under the pointer (`+`, the model and mode pills; no fill at rest
     /// since 2026-11-22): a step over the box (10 %).
     pub control_hover: Rgb,
-    /// Stop's circle while the agent works (your words, 2026-11-22: "make the background
-    /// redish"): the theme's red over the outer ring, as strong as keeps its square showing; a
-    /// step more under the pointer.
+    /// Stop's circle while the agent works (chore 33, after the dusty rose read as disabled):
+    /// the theme's text colour, solid, at least 3:1 on the box and its ring; a step toward the
+    /// box under the pointer.
     pub stop_fill: Rgb,
     pub stop_hover: Rgb,
+    /// Stop's square on `stop_fill` (chore 33), and Force stop's (the waiting colour).
+    pub stop_square: Rgb,
+    pub force_square: Rgb,
     /// The send circle, empty: a step over the outer ring it sits in (the lead designer's review,
     /// 2026-11-22: as a control it matched the ring in Latte and vanished).
     pub send_empty: Rgb,
@@ -1170,6 +1173,15 @@ impl Colors {
         let chip_fill = mix(you_fill, theme.foreground, 0.06);
         let error_fill = mix(page, ui.block_failed, 0.08);
         let control_hover = mix(ui.composer_inner, theme.foreground, 0.10);
+        // Chore 33: Stop a solid button in the theme's text colour (dark on a light theme, light
+        // on a dark one), 3:1 on the box and its ring; a step toward the box under the pointer.
+        let stop_floor = [ui.composer_inner, ui.composer_outer];
+        let stop_fill = readable(ui.text, &stop_floor, MARK_MIN);
+        let stop_hover = readable(
+            mix(stop_fill, ui.composer_inner, 0.15),
+            &stop_floor,
+            MARK_MIN,
+        );
         let on_box = [ui.composer_inner, control_hover];
         let relay_fill = readable(
             mix(
@@ -1232,23 +1244,10 @@ impl Colors {
             outer_edge: ui.composer_edge,
             pill_hover: ui.composer_pill_hover,
             control_hover,
-            stop_fill: {
-                let red = theme.palette[1];
-                let dim = ui.text_dim;
-                (0..=10)
-                    .map(|k| mix(ui.composer_outer, red, 0.32 - 0.02 * k as f32))
-                    .find(|&fill| {
-                        crate::ui_tokens::contrast(dim, fill) >= crate::ui_tokens::MARK_MIN
-                            && crate::ui_tokens::contrast(ui.text, fill)
-                                >= crate::ui_tokens::MARK_MIN
-                    })
-                    .unwrap_or_else(|| mix(ui.composer_outer, red, 0.12))
-            },
-            stop_hover: mix(
-                mix(ui.composer_outer, theme.palette[1], 0.32),
-                theme.palette[1],
-                0.10,
-            ),
+            stop_fill,
+            stop_hover,
+            stop_square: readable(ui.composer_inner, &[stop_fill, stop_hover], MARK_MIN),
+            force_square: readable(ui.ring_waiting, &[stop_fill, stop_hover], MARK_MIN),
             send_empty: crate::theme::readable(
                 mix(ui.composer_outer, theme.foreground, 0.08),
                 &[ui.composer_outer],
@@ -7884,25 +7883,27 @@ mod tests {
                 let got = contrast(fg, on);
                 assert!(got >= floor - 0.01, "{name}: {what} {got:.2}");
             }
-            // Stop's circle reddish while the agent works (your words, 2026-11-22: "make the
-            // background redish"): it reads apart from its ring, and its square on it.
-            assert!(
-                c.stop_fill.r > c.stop_fill.g && c.stop_fill.r > c.stop_fill.b,
-                "{name}: reddish {:?}",
-                c.stop_fill
-            );
-            let ring = contrast(c.stop_fill, c.outer);
-            assert!(
-                ring >= crate::ui_tokens::SOFT_LINE_MIN - 0.01,
-                "{name}: stop on its ring {ring:.2}"
-            );
-            for (what, square) in [("text", c.text), ("dim", c.dim)] {
-                let got = contrast(square, c.stop_fill);
-                assert!(
-                    got >= crate::ui_tokens::MARK_MIN - 0.01,
-                    "{name}: stop's {what} square {got:.2}"
-                );
+            // Chore 33: Stop is a solid button (the dusty rose read as disabled): its circle
+            // at least 3:1 on the box and on the ring it sits in (WCAG 1.4.11), at rest and
+            // under the pointer, its square 3:1 on it, Force stop's square too.
+            let mark = crate::ui_tokens::MARK_MIN - 0.01;
+            for (what, fg, on) in [
+                ("stop on the box", c.stop_fill, c.box_fill),
+                ("stop on its ring", c.stop_fill, c.outer),
+                ("stop hovered on its ring", c.stop_hover, c.outer),
+                ("stop's square", c.stop_square, c.stop_fill),
+                ("stop's square hovered", c.stop_square, c.stop_hover),
+                ("force stop's square", c.force_square, c.stop_fill),
+                ("force stop's square hovered", c.force_square, c.stop_hover),
+            ] {
+                let got = contrast(fg, on);
+                assert!(got >= mark, "{name}: {what} {got:.2}");
             }
+            // Stopping… is quiet (the empty send's look, below): apart from Stop's circle.
+            assert!(
+                contrast(c.send_empty, c.stop_fill) >= mark,
+                "{name}: Stopping… reads apart from Stop"
+            );
             // The empty send circle shows on the ring it sits in, its arrow on it (the lead
             // designer's review, 2026-11-22).
             let ring = contrast(c.send_empty, c.outer);

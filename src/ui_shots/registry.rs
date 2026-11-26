@@ -427,6 +427,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-box-restart-keeps-queued-text",
     "agent-box-empty",
     "agent-box-working",
+    "agent-box-bottom-row",
     "agent-box-suggestion",
     "agent-box-suggestion-tab-takes",
     "agent-box-suggestion-stale",

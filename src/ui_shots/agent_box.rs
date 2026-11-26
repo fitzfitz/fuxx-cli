@@ -162,6 +162,14 @@ pub(super) const SCENES: &[Scene] = &[
         sources: LAYOUT,
     },
     Scene {
+        name: "agent-box-bottom-row",
+        run: agent_box_bottom_row,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: LAYOUT,
+    },
+    Scene {
         name: "agent-box-suggestion",
         run: agent_box_suggestion,
         themes: Themes::Both,
@@ -760,8 +768,9 @@ pub(super) fn agent_box_send_notch() {
             let (outer, send) = (part(cx, tab, n, "outer"), part(cx, tab, n, "send"));
             let (attach, mode) = (part(cx, tab, n, "attach"), part(cx, tab, n, "mode"));
             assert_eq!(send.size, size(px(34.), px(34.)), "{n} {when}: 34 across");
-            // (Inside the outer box's 1 px edge, the box's gap in: `OUTER_INSET`.)
-            let inset = px(crate::card_view::EDGE + crate::card_view::OUTER_INSET);
+            // The box's gap in (`OUTER_INSET`), as the inner box is laid out (chore 33: it was
+            // 1 pt further in, off its notch and the controls' line by 1 pt).
+            let inset = px(crate::card_view::OUTER_INSET);
             assert!(
                 near(outer.right() - send.right(), inset),
                 "{n} {when}: right {outer:?} {send:?}"
@@ -1730,6 +1739,137 @@ pub(super) fn agent_box_working() {
         let _ = frame_fresh(cx, window);
         let dot = part(cx, tab, n, "context-warning");
         assert!(inside(dot, clock), "{n}: the dot on the clock {dot:?}");
+    });
+}
+
+/// Chore 33: the box's bottom row, measured (empty, typed, running). `+`, the model pill, the
+/// clock, the gauge (its warning badge on), the mode pill and the round button sit on one centre
+/// line; the icons' ink on it too, and the left group's ink evenly spaced. The button follows the
+/// state: empty a quiet ↑, typed the accent with its arrow, running a solid Stop (the theme's
+/// text colour) with its square in the box's colour. The badge wears a 2 pt ring of the box's
+/// colour round its dot.
+pub(super) fn agent_box_bottom_row() {
+    layout_scene("agent-box-bottom-row", |n, cx, window, tab| {
+        feed(cx, tab, |t, cx| {
+            t.shot_feed(
+                vec![
+                    Event::Usage {
+                        context_pct: Some(18),
+                        cost_usd: Some(0.2116),
+                    },
+                    Event::RateLimit(RateLimit {
+                        limit: "Current session".into(),
+                        state: LimitState::Close,
+                        resets_at: None,
+                        used_pct: None,
+                    }),
+                ],
+                cx,
+            )
+        });
+        let c = cx.read(|cx| {
+            crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
+        });
+        let dims = size(px(DIMS.0), px(DIMS.1));
+        let rgb = |c: alacritty_terminal::vte::ansi::Rgb| [c.r, c.g, c.b];
+        let ink = |shot: &super::Shot, b: Bounds<Pixels>| {
+            let area = (
+                f32::from(b.left()),
+                f32::from(b.top()),
+                f32::from(b.size.width),
+                f32::from(b.size.height),
+            );
+            super::ink_box(shot, dims, area, rgb(c.box_fill), rgb(c.dim))
+                .unwrap_or_else(|| panic!("{n}: no ink in {b:?}"))
+        };
+        let check = |cx: &mut VisualTestAppContext, when: &str| -> super::Shot {
+            let shot = frame_fresh(cx, window);
+            let send = part(cx, tab, n, "send");
+            let centre = f32::from(send.center().y);
+            let names = ["attach", "model", "clock-button", "usage-button", "mode"];
+            for name in names {
+                let b = part(cx, tab, n, name);
+                let got = f32::from(b.center().y);
+                assert!(
+                    (got - centre).abs() <= 0.5,
+                    "{n} {when}: {name}'s centre {got} off the button's {centre}"
+                );
+            }
+            // The icons' ink on the line (the gauge's arc sits high in its own drawing, so the
+            // round ones: `+` and the clock).
+            for name in ["attach", "clock-button"] {
+                let (_, _, y0, y1) = ink(&shot, part(cx, tab, n, name));
+                let got = (y0 + y1) / 2.;
+                assert!(
+                    (got - centre).abs() <= 1.0,
+                    "{n} {when}: {name}'s ink centred at {got}, the line at {centre}"
+                );
+            }
+            // The left group's ink evenly spaced: + → model → clock → gauge.
+            let inks: Vec<_> = ["attach", "model", "clock-button", "usage-button"]
+                .map(|name| ink(&shot, part(cx, tab, n, name)))
+                .to_vec();
+            let gaps: Vec<f32> = inks.windows(2).map(|w| w[1].0 - w[0].1).collect();
+            let (lo, hi) = gaps
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(lo, hi), &g| (lo.min(g), hi.max(g)));
+            assert!(hi - lo <= 1.0, "{n} {when}: uneven gaps {gaps:?}");
+            shot
+        };
+
+        let shot = check(cx, "empty");
+        let send = part(cx, tab, n, "send");
+        let at = |b: Bounds<Pixels>, dx: f32| (f32::from(b.left()) + dx, f32::from(b.center().y));
+        let (x, y) = at(send, 4.);
+        assert!(
+            super::gap(super::pixel_at(&shot, dims, x, y), c.send_empty) < 12,
+            "{n}: empty, the quiet circle"
+        );
+        // The badge: its dot in the warning colour, a ring of the box's colour round it.
+        let dot = part(cx, tab, n, "limit-warning");
+        let gauge = part(cx, tab, n, "usage-button");
+        assert!(inside(dot, gauge), "{n}: the badge on the gauge {dot:?}");
+        // (The mark is inside the ring: the dot itself.)
+        assert_eq!(dot.size, size(px(6.), px(6.)), "{n}: a 6 pt dot");
+        let (x, y) = (f32::from(dot.center().x), f32::from(dot.center().y));
+        let p = super::pixel_at(&shot, dims, x, y);
+        assert!(super::gap(p, c.ask_edge) < 12, "{n}: the dot {p:?}");
+        // Its ring all round, 1 pt out from the dot: the box's colour, the gauge's arc cut away
+        // under it (without the ring the arc shows there).
+        for k in 0..24 {
+            let a = k as f32 * std::f32::consts::TAU / 24.;
+            let (rx, ry) = (x + 4. * a.cos(), y + 4. * a.sin());
+            let p = super::pixel_at(&shot, dims, rx, ry);
+            assert!(
+                super::gap(p, c.box_fill) < 16,
+                "{n}: the ring at {k}/24 {p:?}"
+            );
+        }
+
+        cx.simulate_input(window, "add a retry to retry.rs");
+        let shot = check(cx, "typed");
+        let (x, y) = at(part(cx, tab, n, "send"), 4.);
+        assert!(
+            super::gap(super::pixel_at(&shot, dims, x, y), c.send_fill) < 12,
+            "{n}: typed, the accent"
+        );
+        feed(cx, tab, |t, cx| {
+            t.send("Add a retry to retry.rs".into(), cx)
+        });
+        let shot = check(cx, "running");
+        let stop = part(cx, tab, n, "send");
+        let (x, y) = at(stop, 4.);
+        let p = super::pixel_at(&shot, dims, x, y);
+        assert!(
+            super::gap(p, c.stop_fill) < 12,
+            "{n}: Stop's solid fill {p:?}"
+        );
+        let (x, y) = (f32::from(stop.center().x), f32::from(stop.center().y));
+        let p = super::pixel_at(&shot, dims, x, y);
+        assert!(
+            super::gap(p, c.stop_square) < 12,
+            "{n}: Stop's square {p:?}"
+        );
     });
 }
 
