@@ -245,12 +245,14 @@ fn names_file(path: &str, named: &str) -> bool {
 
 /// Marks done the tasks not done yet whose named files (`files`, by task) the commits since the
 /// plan (`commits`: hash and changed paths, newest first) touched, more than half of them, with
-/// the oldest commit that touched the most of them (chore 20: commits saying "Chore 16: …").
+/// the oldest commit that touched the most of them (chore 20: commits saying "Chore 16: …"); a
+/// task done by its ticked boxes gets its commit the same way, so later tasks count from it.
 /// A commit counts for a task only when it is newer than the newest commit an earlier task was
 /// done by, or touches a file this task names and no earlier one does (the review: an earlier
 /// task's commit touching a later task's files ticked it before it was built).
 /// A task naming no files (a closing "docs, screenshots, review") is done, once the task before
-/// it is, by the first commit after the newest an earlier task was done by (chore 32).
+/// it is, by the first commit after the newest an earlier task was done by that touches none of
+/// the plan's files (chore 32; the review: not a fix to an earlier task).
 pub fn match_files(
     tasks: &mut [PlanTask],
     commits: &[(String, Vec<String>)],
@@ -261,13 +263,25 @@ pub fn match_files(
     let at = |hash: &str| commits.iter().position(|(h, _)| h == hash);
     // The newest commit an earlier task was done by, as its place (newest first: smaller).
     let mut floor: Option<usize> = None;
+    let planned: Vec<&String> = files.iter().flatten().collect();
     for (k, named) in files.iter().enumerate().take(tasks.len()) {
-        let open = !matches!(tasks[k].state, TaskState::Done { .. });
+        // Not done, or done by its boxes with no commit known.
+        let open = !matches!(tasks[k].state, TaskState::Done { commit: Some(_) });
         if open && named.is_empty() {
+            let not_done = !matches!(tasks[k].state, TaskState::Done { .. });
             let after_previous = k > 0 && matches!(tasks[k - 1].state, TaskState::Done { .. });
-            if after_previous && let Some(f) = floor.filter(|f| *f > 0) {
+            let closing = floor.and_then(|f| {
+                commits[..f]
+                    .iter()
+                    .rev()
+                    .find(|(_, paths)| !planned.iter().any(|p| touches(paths, p)))
+            });
+            if not_done
+                && after_previous
+                && let Some((hash, _)) = closing
+            {
                 tasks[k].state = TaskState::Done {
-                    commit: Some(commits[f - 1].0.clone()),
+                    commit: Some(hash.clone()),
                 };
             }
         } else if open {

@@ -209,7 +209,8 @@ fn commit_of(t: &PlanTask) -> Option<&str> {
 }
 
 /// The plan tab's reading of the real plan with every commit landed: 9 of 9, each task by the
-/// commit that built it, the closing task by the first commit after Task 8's.
+/// commit that built it, the closing task by the docs commit (the review: not by a fix-wave
+/// commit, which touches the plan's files).
 #[test]
 fn chores_25_30s_plan_reads_9_of_9() {
     let mut newest_first = chores_25_30_commits();
@@ -229,12 +230,13 @@ fn chores_25_30s_plan_reads_9_of_9() {
             Some("a01d116"),
             Some("af083d6"),
             Some("10f87f2"),
-            Some("868dca3"),
+            Some("991d32a"),
         ]
     );
 }
 
-/// Replayed commit by commit: the closing task waits until a commit lands after Task 8's.
+/// Replayed commit by commit: the closing task waits for a commit after Task 8's that touches
+/// none of the plan's files (the fix wave's 868dca3, 1a0872d, 15ec0d5 do; the docs one doesn't).
 #[test]
 fn the_closing_task_waits_for_a_commit_after_the_last_built_one() {
     let all = chores_25_30_commits();
@@ -247,7 +249,7 @@ fn the_closing_task_waits_for_a_commit_after_the_last_built_one() {
         let closing_done = matches!(tasks[8].state, TaskState::Done { .. });
         assert_eq!(
             closing_done,
-            landed > at("10f87f2") + 1,
+            landed > at("991d32a"),
             "after {}",
             all[landed - 1].hash
         );
@@ -266,9 +268,9 @@ fn only_the_files_block_names_changed_files() {
             .any(|f| f == "scripts/record-agent-fixture.py")
     );
     assert!(
-        !files[0].iter().any(|f| f == "claude-mode-mid-turn.jsonl"),
-        "a step's file isn't the task's: {:?}",
-        files[0]
+        !files[1].iter().any(|f| f == "claude-plan-auto.jsonl"),
+        "a file only Task 2's steps name isn't the task's: {:?}",
+        files[1]
     );
     assert!(files[8].is_empty(), "{:?}", files[8]);
     // A list under `**Files:**` counts until the steps start.
@@ -296,4 +298,70 @@ fn a_task_with_no_files_follows_the_previous_tasks_commit() {
     let mut tasks = from_checklist(md);
     mark_done(&mut tasks, md, &[later]);
     assert_eq!(counts(&tasks), (0, 2));
+}
+
+/// The review of chore 32: a commit that touches a file the plan names (a fix to an earlier
+/// task) doesn't tick a task naming no files; the next one touching none of them does.
+#[test]
+fn a_fix_to_an_earlier_task_doesnt_tick_the_closing_one() {
+    let md = "### Task 1: A\n**Files:** Modify `src/retry.rs`\n### Task 2: Docs\n- [ ] Run `scripts/prune-target.sh`\n";
+    let built = commit("aaa1111", "Retry with backoff", &["src/retry.rs"]);
+    let fix = commit("bbb2222", "Retry: review fix", &["src/retry.rs"]);
+    let docs = commit("ccc3333", "docs: retry built", &["docs/notes.md"]);
+    let mut tasks = from_checklist(md);
+    mark_done(&mut tasks, md, &[fix.clone(), built.clone()]);
+    assert_eq!(tasks[1].state, TaskState::Building, "{tasks:?}");
+    let mut tasks = from_checklist(md);
+    mark_done(&mut tasks, md, &[docs, fix, built]);
+    assert_eq!(commit_of(&tasks[1]), Some("ccc3333"));
+}
+
+/// The plan text with every box of tasks 1..=`upto` ticked.
+fn ticked(md: &str, upto: usize) -> String {
+    let mut task = 0;
+    md.lines()
+        .map(|line| {
+            if line.starts_with("### Task ") {
+                task += 1;
+            }
+            if task <= upto {
+                line.replacen("- [ ]", "- [x]", 1)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The review of chore 32: builds tick a task's boxes with its commit, and a task ticked by its
+/// boxes still moves the floor, so an earlier task's commit (Task 2's e12608d touches both of
+/// Task 7's files) doesn't tick a later task before it is built.
+#[test]
+fn a_plan_ticked_as_it_is_built_reads_one_task_at_a_time() {
+    let all = chores_25_30_commits();
+    let builds = [
+        "8b1e0ca", "e12608d", "35000d5", "4ccfb3d", "9ef8d2a", "a01d116", "af083d6", "10f87f2",
+        "991d32a",
+    ];
+    for landed in 1..=all.len() {
+        let built = builds
+            .iter()
+            .filter(|h| all[..landed].iter().any(|c| c.hash == **h))
+            .count();
+        let md = ticked(CHORES_25_30_PLAN, built);
+        let mut newest_first = all[..landed].to_vec();
+        newest_first.reverse();
+        let mut tasks = from_checklist(&md);
+        mark_done(&mut tasks, &md, &newest_first);
+        let done: Vec<usize> = (0..tasks.len())
+            .filter(|&i| matches!(tasks[i].state, TaskState::Done { .. }))
+            .collect();
+        assert_eq!(
+            done,
+            (0..built).collect::<Vec<_>>(),
+            "after {}",
+            all[landed - 1].hash
+        );
+    }
 }
