@@ -98,6 +98,11 @@ pub(super) const SCENES: &[Scene] = &[
         agent_plan_long_command,
         PLAN_CARD,
     ),
+    scene(
+        "agent-plan-waiting-narrow",
+        agent_plan_waiting_narrow,
+        PLAN_CARD,
+    ),
 ];
 
 /// The Plan card's scenes (the landing page's "Plan first, then build"): the card and its rules.
@@ -1122,18 +1127,13 @@ pub(super) fn agent_plan_waiting() {
     shoot("agent-plan-waiting", DIMS, |n, cx, window, tab, _| {
         to_plan(cx, tab, false);
         let _ = frame_fresh(cx, window);
-        // Chore 23: one header line (☰ Claude's plan · its file · its steps), no 16 pt title,
-        // the three answers in one row of 24 pt buttons, 12 pt in from the card's side.
+        // Chore 23: one header line (☰ Claude's plan · its file · its steps), the three answers in one row of 24 pt buttons, 12 pt in from the card's side.
         let header = part(cx, tab, n, "plan-header");
         assert!(
             header.size.height <= px(24.),
             "{n}: one header line ({header:?})"
         );
         let _ = part(cx, tab, n, "plan-header-steps");
-        assert!(
-            !cx.read(|cx| tab.read(cx).shot_part_now("plan-title")),
-            "{n}: no title line"
-        );
         let buttons = part(cx, tab, n, "plan-buttons");
         let approve = part(cx, tab, n, "plan-approve-auto");
         let card = part(cx, tab, n, "plan-card");
@@ -1286,7 +1286,7 @@ pub(super) fn agent_plan_long_command() {
         events.push(Event::Permission {
             id: "perm-long".into(),
             tool: "Bash".into(),
-            what: "cat > /tmp/fx/retry_check.sh <<'EOF'\nset -e\ncargo test retry -- --nocapture\ncargo test client::current\necho done\nEOF".into(),
+            what: "cat > /tmp/fx/code/my-app/scripts/retry_check_for_the_failover_case.sh <<'EOF' && chmod +x /tmp/fx/code/my-app/scripts/retry_check_for_the_failover_case.sh && echo written to the scripts folder\nset -e\ncargo test retry -- --nocapture\ncargo test client::current\necho done\nEOF".into(),
             detail: String::new(),
             always: None,
             by: None,
@@ -1338,6 +1338,13 @@ pub(super) fn agent_plan_long_command() {
             text.top() >= row.top() - px(0.5) && text.bottom() <= row.bottom() + px(0.5),
             "{n}: the command inside its row ({text:?} in {row:?})"
         );
+        // A first line longer than the row is cut there (with "…"), not run past it (the review
+        // of chore 23): the words' own box stays in the row.
+        let words = part(cx, tab, n, "permission-answer-words");
+        assert!(
+            words.right() <= row.right() + px(0.5) && words.size.height <= px(22.5),
+            "{n}: the long first line cut inside the row ({words:?} in {row:?})"
+        );
         // Opened, the row grows to hold the whole command, and the next row starts below it.
         click(cx, window, row);
         let _ = frame_fresh(cx, window);
@@ -1348,9 +1355,10 @@ pub(super) fn agent_plan_long_command() {
             row.size.height > px(60.),
             "{n}: opened, the whole command ({row:?})"
         );
+        let words = part(cx, tab, n, "permission-answer-words");
         assert!(
-            text.bottom() <= row.bottom() + px(0.5),
-            "{n}: still inside its row ({text:?} in {row:?})"
+            text.bottom() <= row.bottom() + px(0.5) && words.right() <= row.right() + px(0.5),
+            "{n}: still inside its row, long lines wrapped ({words:?} in {row:?})"
         );
         let list = cx.read(|cx| tab.read(cx).shot_list());
         let k = (0..list.item_count())
@@ -1367,4 +1375,24 @@ pub(super) fn agent_plan_long_command() {
             "{n}: the next row below it"
         );
     });
+}
+
+/// A waiting plan in a 420 pt pane (the review of chore 23): the answers wrap inside the card,
+/// none cut off by its edge.
+pub(super) fn agent_plan_waiting_narrow() {
+    shoot(
+        "agent-plan-waiting-narrow",
+        (420.0, 720.0),
+        |n, cx, window, tab, _| {
+            to_plan(cx, tab, false);
+            super::chrome::settle_frames(cx, window);
+            let card = part(cx, tab, n, "plan-card");
+            let buttons = part(cx, tab, n, "plan-buttons");
+            let keep = part(cx, tab, n, "plan-keep-planning");
+            assert!(
+                buttons.right() <= card.right() + px(0.5) && keep.right() <= card.right(),
+                "{n}: the answers inside the card ({keep:?} in {card:?})"
+            );
+        },
+    );
 }

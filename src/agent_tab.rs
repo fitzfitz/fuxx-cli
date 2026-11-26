@@ -464,16 +464,20 @@ pub fn rereads_branch(event: &Event) -> bool {
 }
 
 /// A command as one line (chore 23): its first line with words, "…" after it when more lines
-/// follow; and whether there are more.
+/// follow; and whether there is more to open (more lines, or a line long enough to be cut).
 pub fn command_line(what: &str) -> (String, bool) {
     let mut lines = what.lines().map(str::trim).filter(|l| !l.is_empty());
     let first = lines.next().unwrap_or("").to_string();
     if lines.next().is_some() {
         (format!("{first} \u{2026}"), true)
     } else {
-        (first, false)
+        let long = first.chars().count() > LONG_COMMAND;
+        (first, long)
     }
 }
+
+/// A one-line command longer than this many characters can be opened whole (a row cuts it).
+const LONG_COMMAND: usize = 60;
 
 /// An answered plan card's line (the 2026-11-25 chores).
 pub fn plan_answer_line(answer: &Answer) -> String {
@@ -7238,6 +7242,9 @@ mod tests {
             ("cat > a.sh <<'EOF' \u{2026}".to_string(), true)
         );
         assert_eq!(command_line("  \n  ls\n"), ("ls".to_string(), false));
+        // A single line long enough to be cut opens too (the review of chore 23).
+        let long = "cd my-app && cargo test retry -- --nocapture 2>&1 | grep -E 'FAILED|panicked'";
+        assert_eq!(command_line(long), (long.to_string(), true));
     }
 
     /// The 2026-11-25 chores: an answered plan says how it went (chore 23: on its one line,

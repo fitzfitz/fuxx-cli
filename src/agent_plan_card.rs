@@ -331,7 +331,7 @@ impl AgentTab {
                     } else if !live {
                         d.child("Next: answer the request before it first.")
                     } else {
-                        d.child(self.marked("plan-buttons", self.plan_buttons("plan", ix, look)))
+                        d.child(self.marked("plan-buttons", self.plan_buttons(ix, look)))
                     }
                 });
             if live {
@@ -358,8 +358,10 @@ impl AgentTab {
         self.marked("plan-card", card).into_any_element()
     }
 
-    /// The three answers in one row of 24 pt buttons (chore 23), for the card's footer.
-    fn plan_buttons(&self, id: &'static str, ix: usize, look: &Look) -> gpui::Div {
+    /// The three answers in one row of 24 pt buttons (chore 23), for the card's footer; they
+    /// wrap in a narrow pane rather than run past the card.
+    fn plan_buttons(&self, ix: usize, look: &Look) -> gpui::Div {
+        let id = "plan";
         let c = &look.c;
         let slim = |b: gpui::Stateful<gpui::Div>| b.h(px(24.)).px(px(10.)).flex_none();
         let approve = slim(button(
@@ -373,6 +375,7 @@ impl AgentTab {
         }));
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(6.))
             .text_size(px(crate::ui_tokens::text::META))
@@ -389,7 +392,7 @@ impl AgentTab {
                 })),
             )
             .child(
-                div()
+                self.marked("plan-keep-planning", div())
                     .id(SharedString::from(format!("{id}-keep-planning")))
                     .h(px(24.))
                     .px(px(8.))

@@ -485,12 +485,9 @@ impl AgentTab {
                             answer_line(answer),
                             if open { what.trim() } else { first.as_str() }
                         );
-                        let text = div().flex_1().min_w(px(0.));
-                        let text = if open {
-                            text.py(px(3.))
-                        } else {
-                            text.truncate()
-                        };
+                        // Block text (not a flex row), so it cuts with "…" closed and wraps open.
+                        let text = div().flex_1().min_w(px(0.)).line_height(px(22.));
+                        let text = if open { text } else { text.truncate() };
                         let toggle = {
                             let id = id.clone();
                             on_tab(&look.view, move |this, cx| this.toggle_command(&id, ix, cx))
@@ -526,10 +523,10 @@ impl AgentTab {
                             .child(
                                 self.marked(
                                     "permission-answer-text",
-                                    text.min_h(px(22.))
-                                        .flex()
-                                        .items_center()
-                                        .child(SharedString::from(words)),
+                                    text.child(
+                                        self.marked("permission-answer-words", div())
+                                            .child(SharedString::from(words)),
+                                    ),
                                 ),
                             )
                             .into_any_element()
