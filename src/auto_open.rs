@@ -7,10 +7,12 @@
 //! `~/.local/share/fuxx/shims` (`~/.local/share/fuxx-dev/shims` for a debug build; a path with
 //! no space, so tools that split `$BROWSER` can run it), each only when it changed: `open`, `xdg-open` and `fuxx-browser` (for `$BROWSER`). Every fuxx terminal and
 //! agent process gets that folder first on `PATH` and `BROWSER=<folder>/fuxx-browser`. A shim
-//! takes over only a lone `http://` or `https://` address (`auto_open_target`; also
-//! `-u`/`--url URL`, and `-a <our fuxx-browser> URL`, which is how Vite's `open` package uses
-//! `$BROWSER`); anything else, and any failure (fuxx not reachable, scripting off, no calling
-//! tab), runs the real `/usr/bin/open` with the arguments untouched.
+//! takes over only a lone `http://` or `https://` address, or (chore 35) a local page: an
+//! existing `.html`/`.htm` file (made absolute; `fuxx link open` makes it a `file://` address)
+//! or such a page's `file://` address (`auto_open_target`; also `-u`/`--url URL`, and
+//! `-a <our fuxx-browser> URL`, which is how Vite's `open` package uses `$BROWSER`); anything
+//! else (PDFs, folders, other files, flags), and any failure (fuxx not reachable, scripting
+//! off, no calling tab), runs the real `/usr/bin/open` with the arguments untouched.
 //!
 //! Limits: macOS login shells run `path_helper` (`/etc/zprofile`), which moves the folder behind
 //! `/usr/bin`; fuxx's zsh integration puts it first again at the first prompt (`.zshenv`, from
@@ -50,20 +52,42 @@ pub fn is_web(url: &str) -> bool {
     url.len() > scheme
 }
 
-/// The address a shim given `args` hands to fuxx, or none (the real `open` gets them). Exactly
-/// one web address (`is_web`); or `-u URL` / `--url URL`; or `-a APP URL` where `APP` is fuxx's
-/// own `$BROWSER` shim (`browser`, or its bare name). Any other flag, a file, or more arguments:
-/// none. The shims' `case` mirrors this (`the_script_mirrors_auto_open_target` runs both on the
-/// same cases); only the tests call it, since the decision is the script's.
+/// Whether `link open` takes `url` from a shim: a web address (`is_web`), or (chore 35) a local
+/// page's (`browser_url::is_local_page`).
+pub fn takes(url: &str) -> bool {
+    is_web(url) || crate::browser_url::is_local_page(url)
+}
+
+/// What a shim given `args`, run in folder `cwd`, hands to fuxx, or none (the real `open` gets
+/// them). Exactly one web address (`is_web`) or local page address (`file://…html`); or (chore
+/// 35) one page on disk (`.html`/`.htm`, an existing file, not a flag), made absolute against
+/// `cwd`; or either after `-u` / `--url`, or after `-a APP` where `APP` is fuxx's own `$BROWSER`
+/// shim (`browser`, or its bare name). Any other flag or file, or more arguments: none. The
+/// shims' `case` mirrors this (`the_script_mirrors_auto_open_target` runs both on the same
+/// cases); only the tests call it, since the decision is the script's.
 #[cfg(test)]
-pub fn auto_open_target<'a>(args: &'a [String], browser: &str) -> Option<&'a str> {
+pub fn auto_open_target(args: &[String], browser: &str, cwd: &Path) -> Option<String> {
     let url = match args {
         [url] => url,
         [flag, url] if flag == "-u" || flag == "--url" => url,
         [flag, app, url] if flag == "-a" && (app == browser || app == BROWSER_SHIM) => url,
         _ => return None,
     };
-    is_web(url).then_some(url.as_str())
+    if takes(url) {
+        return Some(url.clone());
+    }
+    let file = cwd.join(url);
+    let page = !url.starts_with('-')
+        && !url.contains("://")
+        && crate::browser_url::is_page_name(url)
+        && file.is_file();
+    page.then(|| {
+        if url.starts_with('/') {
+            url.clone()
+        } else {
+            format!("{}/{url}", cwd.display())
+        }
+    })
 }
 
 /// The shim folder under `home`: `~/.local/share/fuxx/shims`, `fuxx-dev` for a debug build
@@ -116,9 +140,10 @@ pub fn script(fuxx: &Path, browser: &Path) -> String {
     format!(
         r#"#!/bin/sh
 # fuxx: a program's own browser opening (open URL, xdg-open URL, $BROWSER URL) goes where a
-# clicked link would. A lone http(s) address (or -u/--url URL, or -a <this folder's
-# fuxx-browser> URL) goes to `fuxx link open`; anything else, or any failure, to the real open,
-# untouched. fuxx writes this file at startup; edits are replaced.
+# clicked link would. A lone http(s) address, a local page's file:// address, or a page on disk
+# (an existing .html/.htm file, made absolute) (or any of them after -u/--url, or -a <this
+# folder's fuxx-browser>) goes to `fuxx link open`; anything else, or any failure, to the real
+# open, untouched. fuxx writes this file at startup; edits are replaced.
 fuxx={fuxx}
 browser={browser}
 real="${{{REAL_OPEN_VAR}:-/usr/bin/open}}"
@@ -132,6 +157,12 @@ case $# in
 esac
 case $url in
     [Hh][Tt][Tt][Pp]://?* | [Hh][Tt][Tt][Pp][Ss]://?*) ;;
+    [Ff][Ii][Ll][Ee]://*.[Hh][Tt][Mm] | [Ff][Ii][Ll][Ee]://*.[Hh][Tt][Mm][Ll]) ;;
+    [Ff][Ii][Ll][Ee]://*.[Hh][Tt][Mm][?#]* | [Ff][Ii][Ll][Ee]://*.[Hh][Tt][Mm][Ll][?#]*) ;;
+    -* | *://*) exec "$real" "$@" ;;
+    *.[Hh][Tt][Mm] | *.[Hh][Tt][Mm][Ll])
+        [ -f "$url" ] || exec "$real" "$@"
+        case $url in /*) ;; *) url=$PWD/$url ;; esac ;;
     *) exec "$real" "$@" ;;
 esac
 [ -n "${{FUXX_SOCKET:-}}" ] || exec "$real" "$@"
@@ -289,7 +320,7 @@ mod tests {
     }
 
     fn target(a: &[&str]) -> Option<String> {
-        auto_open_target(&args(a), BROWSER).map(str::to_string)
+        auto_open_target(&args(a), BROWSER, Path::new("/nonexistent"))
     }
 
     #[test]
@@ -314,7 +345,8 @@ mod tests {
     fn anything_else_goes_to_the_real_open() {
         for a in [
             &[][..],
-            &["file:///tmp/code/my-app/index.html"],
+            &["file:///tmp/code/my-app/report.pdf"],
+            &["code/my-app/index.html"],
             &["code/my-app"],
             &["mailto:team@example.com"],
             &["http://"],
@@ -328,6 +360,19 @@ mod tests {
             &["-n", "-u", URL],
         ] {
             assert_eq!(target(a), None, "{a:?}");
+        }
+    }
+
+    /// Chore 35: what `link open` takes from a shim: a web address, or a local page's.
+    #[test]
+    fn link_open_takes_a_web_address_or_a_local_page() {
+        assert!(takes(URL) && takes("file:///x/my-app/index.html"));
+        for no in [
+            "file:///etc/hosts",
+            "/x/my-app/index.html",
+            "mailto:team@example.com",
+        ] {
+            assert!(!takes(no), "{no}");
         }
     }
 
@@ -474,7 +519,19 @@ mod tests {
             let fuxx = fake("fake-fuxx", "fuxx.log", "\"${FAKE_FUXX_EXIT:-0}\"");
             fake("stub-open", "open.log", "0");
             install(&dir.join("shims"), &fuxx).unwrap();
+            // Chore 35's files: two pages, a PDF, a folder named like a page.
+            for page in ["page.html", "site/index.HTM", "report.pdf"] {
+                let path = dir.join(page);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, "<p>my-app</p>").unwrap();
+            }
+            fs::create_dir_all(dir.join("folder.html")).unwrap();
             Rig { dir }
+        }
+
+        /// The folder the shims run in, as `sh`'s `$PWD` reads it (symbolic links resolved).
+        fn here(&self) -> PathBuf {
+            fs::canonicalize(&self.dir).unwrap()
         }
 
         /// Run shim `shim` through `sh` with `args`; (what fuxx got, what the real open got),
@@ -549,6 +606,16 @@ mod tests {
             vec!["http://"],
             vec!["httpx://example.com"],
             vec!["file:///tmp/code/my-app/index.html"],
+            vec!["FILE:///x/Page.HTM?a=1#b"],
+            vec!["file:///x/report.pdf"],
+            vec!["-u", "file:///x/page.html"],
+            vec!["page.html"],
+            vec!["./site/index.HTM"],
+            vec!["missing.html"],
+            vec!["report.pdf"],
+            vec!["folder.html"],
+            vec!["-R", "page.html"],
+            vec!["page.html", "site/index.HTM"],
             vec!["code/my-app"],
             vec![URL, URL],
             vec!["-R", URL],
@@ -558,10 +625,10 @@ mod tests {
         ];
         for case in cases {
             let owned = args(&case);
-            let rule = auto_open_target(&owned, &browser);
+            let rule = auto_open_target(&owned, &browser, &rig.here());
             let got = rig.run("open", &case, IN_FUXX);
             let want = match rule {
-                Some(url) => [lines(&["link", "open", url]), None],
+                Some(url) => [lines(&["link", "open", &url]), None],
                 None => [None, lines(&case)],
             };
             assert_eq!(got, want, "{case:?}");
@@ -573,7 +640,7 @@ mod tests {
         let rig = Rig::new("auto-open-shim-pass");
         for a in [
             &["code/my-app"][..],
-            &["file:///tmp/code/my-app/index.html"],
+            &["file:///tmp/code/my-app/report.pdf"],
             &["-a", "Safari", URL],
             &["-R", "code/my-app"],
             &[URL, "http://localhost:5174"],
@@ -591,6 +658,64 @@ mod tests {
         assert_eq!(
             rig.run("open", &["-u", URL], &failing),
             [lines(&["link", "open", URL]), lines(&["-u", URL])]
+        );
+    }
+
+    /// Chore 35: a lone page on disk (relative to where the program runs, or absolute) or a
+    /// `file://` page address goes to `fuxx link open`, as a web address does.
+    #[test]
+    fn the_open_shim_hands_a_local_page_to_fuxx() {
+        let rig = Rig::new("auto-open-shim-page");
+        let here = rig.here().display().to_string();
+        let to_fuxx = |url: &str| [lines(&["link", "open", url]), None];
+        let page = format!("{here}/page.html");
+        assert_eq!(rig.run("open", &["page.html"], IN_FUXX), to_fuxx(&page));
+        assert_eq!(
+            rig.run("open", &["./site/index.HTM"], IN_FUXX),
+            to_fuxx(&format!("{here}/./site/index.HTM"))
+        );
+        assert_eq!(rig.run("open", &[&page], IN_FUXX), to_fuxx(&page));
+        for url in [
+            "file:///x/page.html",
+            "FILE:///x/Page.HTM",
+            "file:///x/page.html?a=1#b",
+        ] {
+            assert_eq!(rig.run("open", &[url], IN_FUXX), to_fuxx(url), "{url}");
+            assert_eq!(rig.run("open", &["-u", url], IN_FUXX), to_fuxx(url));
+        }
+        assert_eq!(rig.run("xdg-open", &["page.html"], IN_FUXX), to_fuxx(&page));
+        assert_eq!(
+            rig.run("fuxx-browser", &["page.html"], IN_FUXX),
+            to_fuxx(&page)
+        );
+    }
+
+    /// PDFs, folders, missing files, other files' addresses, flags and more than one file: the
+    /// real open, untouched; a page too, outside fuxx or when fuxx can't take it.
+    #[test]
+    fn the_open_shim_leaves_other_files_to_the_real_open() {
+        let rig = Rig::new("auto-open-shim-files");
+        for a in [
+            &["missing.html"][..],
+            &["report.pdf"],
+            &["folder.html"],
+            &["folder.html/"],
+            &["file:///x/report.pdf"],
+            &["file:///x/"],
+            &["-R", "page.html"],
+            &["page.html", "site/index.HTM"],
+        ] {
+            assert_eq!(rig.run("open", a, IN_FUXX), [None, lines(a)], "{a:?}");
+        }
+        assert_eq!(
+            rig.run("open", &["page.html"], &[]),
+            [None, lines(&["page.html"])]
+        );
+        let failing = [IN_FUXX, &[("FAKE_FUXX_EXIT", "3")]].concat();
+        let page = format!("{}/page.html", rig.here().display());
+        assert_eq!(
+            rig.run("open", &["page.html"], &failing),
+            [lines(&["link", "open", &page]), lines(&["page.html"])]
         );
     }
 }

@@ -105,6 +105,14 @@ pub fn caller_tab(
     }
 }
 
+/// Whether a link from `origin` may open `url`: one of the schemes a link may have
+/// (`links::allowed`), or (chore 35) a local page a program opened by itself (`open page.html`).
+/// Output a terminal shows never opens a `file://`.
+pub fn may_open(url: &str, origin: LinkFrom) -> bool {
+    crate::links::allowed(url)
+        || (origin == LinkFrom::AutoOpen && crate::browser_url::is_local_page(url))
+}
+
 /// Whether two addresses are the same page (a trailing `/` aside).
 pub fn same_url(a: &str, b: &str) -> bool {
     a.trim_end_matches('/') == b.trim_end_matches('/')
@@ -112,7 +120,8 @@ pub fn same_url(a: &str, b: &str) -> bool {
 
 /// Where `url`, clicked in pane `from` of workspace `ws`, opens under `mode`.
 ///
-/// - `mailto:` (anything not http or https) and "Your default browser": the OS.
+/// - `mailto:` (anything not http or https, or a local page: chore 35) and "Your default
+///   browser": the OS.
 /// - "A new tab in this pane": `from`.
 /// - "A browser split on the right": the workspace's last link pane (`last`) while it is
 ///   still open, else its most recently used browser pane that isn't `from` (`used`: higher is
@@ -133,6 +142,8 @@ pub fn link_place(
 ) -> LinkPlace {
     let lower = url.to_ascii_lowercase();
     let web = lower.starts_with("http://") || lower.starts_with("https://");
+    // A local page (chore 35) goes where a web link would.
+    let web = web || crate::browser_url::is_local_page(url);
     if !web || mode == OpenLinksIn::Browser {
         return LinkPlace::Os;
     }
@@ -215,9 +226,9 @@ impl crate::workspace::Workspace {
         cx: &mut gpui::Context<Self>,
     ) -> Result<Value, ApiError> {
         let url = required_str(p, "url")?;
-        if !crate::auto_open::is_web(url) {
+        if !crate::auto_open::takes(url) {
             return Err(ApiError::bad_request(format!(
-                "link open takes an http or https address, not {url}"
+                "link open takes an http or https address or a local .html page, not {url}"
             )));
         }
         let agents = |n: u64| {
@@ -240,8 +251,9 @@ impl crate::workspace::Workspace {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        // Only the schemes a link may have (`links::allowed`): never `file://` or a script.
-        if !crate::links::allowed(url) {
+        // Only the schemes a link may have (`links::allowed`): never a script, and `file://`
+        // only for a program's own opening of a local page (`may_open`, chore 35).
+        if !may_open(url, origin) {
             return;
         }
         let mode = cx.global::<crate::appearance::Appearance>().open_links_in;
@@ -352,6 +364,22 @@ mod tests {
         assert!(same_url("https://a.dev/", "https://a.dev"));
         assert!(same_url("https://a.dev/x", "https://a.dev/x"));
         assert!(!same_url("https://a.dev/x", "https://a.dev/y"));
+    }
+
+    /// Chore 35: a local page a program opens (`open page.html`) goes where a web link would;
+    /// a clicked one never opens (`links::allowed` stays the boundary for output).
+    #[test]
+    fn only_a_program_s_own_opening_may_open_a_local_page() {
+        let page = "file:///x/my-app/index.html";
+        assert!(may_open(page, LinkFrom::AutoOpen));
+        assert!(!may_open(page, LinkFrom::Click));
+        assert!(!may_open("file:///etc/hosts", LinkFrom::AutoOpen));
+        assert!(may_open(URL, LinkFrom::Click) && may_open(URL, LinkFrom::AutoOpen));
+        let (m, ws, p) = one();
+        let place = |url, mode| link_place(&m, ws, p, url, mode, None, false, NEVER);
+        assert_eq!(place(page, OpenLinksIn::Split), LinkPlace::Split(p));
+        assert_eq!(place(page, OpenLinksIn::ThisPane), LinkPlace::TabIn(p));
+        assert_eq!(place(page, OpenLinksIn::Browser), LinkPlace::Os);
     }
 
     #[test]

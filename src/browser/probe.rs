@@ -476,6 +476,9 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
     )?;
     keyed.close();
 
+    // Chore 35: a local page (file://) loads with the stylesheet and images beside it.
+    let file_page = probe_file_page(&b, &ex).await?;
+
     // The title, and the user closing the window: noticed, and the browser still answers.
     b.set_title("probe — page two");
     let window_title = b.window.title().to_string();
@@ -554,6 +557,7 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
             "statements": locked_statements.unwrap_err(),
         },
         "edit": { "selected": selected, "undo_responder": undo, "cmd_w_closes": closed_by_key, "cmd_q_passes": !quit, "font_keys_swallowed": font_keys },
+        "file_page": file_page,
         "window_title": window_title,
         "user_closed": { "is_closed": true, "still_answers": after_close },
         "timeout": hang.unwrap_err(),
@@ -561,6 +565,53 @@ async fn probe(mtm: MainThreadMarker, cx: &mut AsyncApp) -> Result<String, Strin
         "ms": started.elapsed().as_millis() as u64,
     })
     .to_string())
+}
+
+/// Chore 35: a page on disk (`file://`) with a stylesheet beside it and an image in a folder
+/// under it: the page loads, its style applies, its image decodes. The page's report.
+async fn probe_file_page(b: &Browser, ex: &BackgroundExecutor) -> Result<Value, String> {
+    let dir = std::env::temp_dir().join(format!("fuxx-probe-file-{}", std::process::id()));
+    let files = [
+        (
+            "page.html",
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>local page</title>\
+             <link rel=\"stylesheet\" href=\"style.css\"></head>\
+             <body><h1>my-app mockup</h1><img src=\"img/dot.svg\"></body></html>",
+        ),
+        ("style.css", "body { color: rgb(1, 2, 3); }"),
+        (
+            "img/dot.svg",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"7\" height=\"5\">\
+             <rect width=\"7\" height=\"5\" fill=\"red\"/></svg>",
+        ),
+    ];
+    for (name, text) in files {
+        let path = dir.join(name);
+        let made = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, text));
+        made.map_err(|e| format!("couldn't write {}: {e}", path.display()))?;
+    }
+    let url = format!("file://{}", dir.join("page.html").display()).replace(' ', "%20");
+    b.load(&url);
+    let state = settle(b, ex, |s| !s.loading && s.url == url).await;
+    let report = match state {
+        Ok(state) => {
+            let js = "[getComputedStyle(document.body).color, \
+                      document.images[0] ? document.images[0].naturalWidth : -1]";
+            let seen = settle_value(b, ex, js, |v| v[1].as_i64().is_some_and(|w| w > 0)).await;
+            json!({ "title": state.title, "error": state.error, "seen": seen })
+        }
+        Err(e) => json!({ "error": e }),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    check(
+        report["title"] == "local page" && report["seen"]["Ok"] == json!(["rgb(1, 2, 3)", 7]),
+        "a file:// page loads with its stylesheet and image",
+        &report,
+    )?;
+    Ok(report)
 }
 
 /// The top bar of a fresh browser: its items, the address field (Enter, a refused address,

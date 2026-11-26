@@ -134,15 +134,10 @@ pub fn suggest<'a>(list: &'a [Visit], typed: &str, now: u64) -> Vec<&'a Visit> {
 
 /// The Google search for `text`: every byte but the unreserved ones percent-encoded.
 pub fn search_url(text: &str) -> String {
-    let mut url = String::from(SEARCH_URL);
-    for b in text.trim().bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            url.push(b as char);
-        } else {
-            url.push_str(&format!("%{b:02X}"));
-        }
-    }
-    url
+    format!(
+        "{SEARCH_URL}{}",
+        crate::browser_url::percent_encode(text.trim(), b"")
+    )
 }
 
 /// The last row under the field: `Search Google for “text”`.

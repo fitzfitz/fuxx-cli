@@ -80,9 +80,95 @@ fn is_local(host: &str) -> bool {
         })
 }
 
+/// `text` with every byte but ASCII letters, digits, `-_.~` and `keep` written `%XX`.
+pub fn percent_encode(text: &str, keep: &[u8]) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') || keep.contains(&b)
+        {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Whether `name` ends in `.html` or `.htm` (any case): a page fuxx's browser shows (chore 35).
+pub fn is_page_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".html") || lower.ends_with(".htm")
+}
+
+/// Chore 35: the `file://` address of the page at absolute `path`; none for a relative path or
+/// a file that isn't a page (`is_page_name`).
+pub fn page_url(path: &std::path::Path) -> Option<String> {
+    let text = path.to_str()?;
+    (path.is_absolute() && is_page_name(text))
+        .then(|| format!("file://{}", percent_encode(text, b"/")))
+}
+
+/// Chore 35: whether `url` is a local page's address, `file://` and a path (before any `?` or
+/// `#`) that `is_page_name`. The one `file://` a program's own opening may show in fuxx.
+pub fn is_local_page(url: &str) -> bool {
+    let Some(scheme) = url.get(..7) else {
+        return false;
+    };
+    let path = url[7..].split(['?', '#']).next().unwrap_or("");
+    scheme.eq_ignore_ascii_case("file://") && is_page_name(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chore 35: a page on disk, made a `file://` address (as a person or a program's `open`
+    /// names it): every byte but the safe ones and `/` written `%XX`.
+    #[test]
+    fn a_page_on_disk_becomes_its_file_address() {
+        use std::path::Path;
+        assert_eq!(percent_encode("a b/c~é", b"/"), "a%20b/c~%C3%A9");
+        assert_eq!(
+            page_url(Path::new("/tmp/my app/caf\u{e9} #1.html")).as_deref(),
+            Some("file:///tmp/my%20app/caf%C3%A9%20%231.html")
+        );
+        assert_eq!(
+            page_url(Path::new("/x/my-app/INDEX.HTM")).as_deref(),
+            Some("file:///x/my-app/INDEX.HTM")
+        );
+        for no in [
+            "my-app/index.html",
+            "/x/report.pdf",
+            "/x/my-app",
+            "/x/page.html.txt",
+        ] {
+            assert_eq!(page_url(Path::new(no)), None, "{no}");
+        }
+    }
+
+    #[test]
+    fn a_local_page_is_a_file_address_to_an_html_file() {
+        for yes in [
+            "file:///x/page.html",
+            "FILE:///x/Page.HTM",
+            "file:///x/page.html?a=1#b",
+            "file:///x/my%20app/page.htm#top",
+        ] {
+            assert!(is_local_page(yes), "{yes}");
+        }
+        for no in [
+            "file:///etc/hosts",
+            "file:///x/report.pdf",
+            "file:///x/",
+            "file://",
+            "http://x/page.html",
+            "/x/page.html",
+            "file:///x/page.html.pdf",
+            "file:///x/report.pdf?x=.html",
+        ] {
+            assert!(!is_local_page(no), "{no}");
+        }
+    }
 
     #[test]
     fn localhost_and_ips_get_http() {

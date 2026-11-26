@@ -360,6 +360,13 @@ fn parse_link(args: &[String], caller: Option<u64>) -> Result<Cli, String> {
     let [url] = a.pos.as_slice() else {
         return Err(usage_err(cmd, "expects URL"));
     };
+    // Chore 35: an absolute path to a page (the shims' `open page.html`, made absolute) goes as
+    // its `file://` address, its `..` and links resolved when it is there.
+    let path = std::path::Path::new(url);
+    let page = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let url = crate::browser_url::page_url(&page)
+        .filter(|_| path.is_absolute())
+        .unwrap_or_else(|| url.clone());
     let mut params = Map::new();
     params.insert("url".into(), json!(url));
     if let Some(c) = caller {
@@ -928,6 +935,12 @@ mod tests {
             let e = p(bad).unwrap_err();
             assert!(e.starts_with("fuxx link"), "{bad:?}: {e}");
         }
+        // Chore 35: an absolute path to a page goes as its file:// address; a relative one as
+        // it is (the shim makes it absolute).
+        let (r, ..) = call(p(&["link", "open", "/x/my app/index.html"]));
+        assert_eq!(r.params["url"], "file:///x/my%20app/index.html");
+        let (r, ..) = call(p(&["link", "open", "my-app/index.html"]));
+        assert_eq!(r.params["url"], "my-app/index.html");
         assert!(USAGE.contains("link open URL"));
         assert_eq!(render("link open", &json!({}), false), "");
     }

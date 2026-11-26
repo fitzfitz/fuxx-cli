@@ -145,6 +145,7 @@ pub(super) const SCENES: &[Scene] = &[
         kind: Kind::State,
         sources: &[
             "src/auto_open.rs",
+            "src/browser_url.rs",
             "src/link_route.rs",
             "src/workspace_api.rs",
             "src/workspace_browser.rs",
@@ -1564,8 +1565,9 @@ fn link_opens_split() {
 /// auto-open: the `open` shim's `fuxx link open`, the `link.open` request). It lands in a
 /// browser split on the right, its pill flashing, the terminal keeping your focus; a second is
 /// a tab in that pane, flashing too; the same address again shows its tab. A terminal in a
-/// workspace you aren't looking at opens beside itself, and you stay where you are. No caller,
-/// an unknown one, or a non-web address is refused (the shim then runs the real `open`); with
+/// workspace you aren't looking at opens beside itself, and you stay where you are. A local
+/// page (chore 35) opens as a web page does. No caller, an unknown one, or another address
+/// (another file, `mailto:`) is refused (the shim then runs the real `open`); with
 /// "Your default browser" it goes to the OS.
 fn link_auto_open() {
     use crate::appearance::{Appearance, OpenLinksIn};
@@ -1649,6 +1651,19 @@ fn link_auto_open() {
         let shown = cx.read(|cx| ws.read(cx).model.pane(now[1].0).unwrap().active);
         assert_eq!(shown, first, "{n}: its tab shown");
         assert_eq!(flash(cx), Some(first), "{n}: and flashing");
+        // Chore 35: a page on disk (`open index.html`, the shim's absolute path, `fuxx link
+        // open`'s file:// address): a tab in that pane, as a web page.
+        let site = crate::test_temp::dir("my-app-site");
+        std::fs::create_dir_all(&site).expect("the site folder");
+        std::fs::write(site.join("index.html"), "<h1>my-app</h1>").expect("the page");
+        let page = crate::browser_url::page_url(&site.join("index.html")).expect("a page");
+        assert_eq!(open(cx, json!({"url": page, "caller": id})), Ok(json!({})));
+        let now = panes(cx);
+        assert_eq!(
+            now[1].1,
+            [url, docs, page.as_str()],
+            "{n}: the local page's tab"
+        );
         // Refused, so the shim runs the real open: no caller, an unknown one, not a web page.
         assert_eq!(open(cx, json!({"url": url})), Err("bad_request"), "{n}");
         assert_eq!(
@@ -1667,7 +1682,7 @@ fn link_auto_open() {
             open(cx, json!({"url": "mailto:team@example.com", "caller": id})),
             Err("bad_request")
         );
-        assert_eq!(panes(cx)[1].1.len(), 2, "{n}: nothing opened for those");
+        assert_eq!(panes(cx)[1].1.len(), 3, "{n}: nothing opened for those");
         // A terminal in another workspace: its page opens beside it; you stay where you are.
         let other = cx
             .update_window(window, |_, window, cx| {
