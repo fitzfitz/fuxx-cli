@@ -1714,3 +1714,13 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     "…"; chore 29 is pinned only on the branch picker; `toggle_input` repeats `toggle_command`'s shape; in Main with
     no status line a background subagent's arc shows in its tab and its chat row; approving into Auto while another
     mode change is pending shows that one until Claude reports Auto.
+- **Chore 32 (queued, not built): the plan tab ticks a closing task that only runs things** (your words, 2026-11-26,
+  with a picture of the 🤖 10/10 ✓ and ☰ 8/9 tabs, "Task 9: Docs, screenshots, review" still ◐: "last task is still
+  hanging when its actually done" → my take → "queue it"). Cause, found: chore 20 ticks a task once commits touched
+  most files it names; plan 2026-11-26-chores-25-30's Task 9 names `scripts/prune-target.sh` (one it runs, never
+  edits; `is_file` in src/plan_progress.rs takes any spaceless backticked path) and its `- [ ]` box was never ticked,
+  so it can never tick. (1) A file a task only runs doesn't count as one it changes (a `scripts/…` named as a step
+  to run, or under no `**Files:**` line); a task naming no changed files ticks once a later commit lands after the
+  previous task's (the closing docs commit). (2) Builds tick their plan's boxes as each task finishes (say so in
+  the milestone build workflow, docs/05-Agentic-Workflow/50 - Agentic Workflow.md). (3) A test from that real plan
+  and its commits: 9 of 9.
