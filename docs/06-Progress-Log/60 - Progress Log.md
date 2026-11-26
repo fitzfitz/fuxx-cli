@@ -44,6 +44,22 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — Chores 33–35: a solid Stop, finished tabs as icons, local pages in fuxx's browser
+
+- **What:** your words: "queue 33 and 34 and build" (the mockup of the agent box's states) and "why is it opened in
+  my browser instead on fuxx browser?" (35). 33: Stop is a solid button in the theme's text colour with a
+  box-coloured square (3:1 in every theme); the gauge's red dot is cut out of its arc by a 2 pt ring; a new scene
+  measured the bottom row and found the round button 1 pt off its notch and the row's line, and the clock and gauge
+  2 pt tight, both fixed. 34: a finished 🤖/▣/☰ tab is its green icon alone, "10 of 10 subagents done" on hover.
+  35: fuxx's browser loads a `file://` page with its CSS and images (checked first, in the browser probe); the
+  `open`/`xdg-open`/`$BROWSER` shim now sends a lone `.html`/`.htm` file or page address to fuxx's browser, and
+  everything else still goes to macOS. Commits `fe6674d`, `40c0d7b`, `f81fe29`, `dfce0f1`.
+- **Checks:** tests 3032 green, clippy (both runs) clean in the files touched, fmt clean; scenes since `607dd46`
+  passed but `agent-tab-wide` (as on master); the serial `file-tab-md-mermaid` hung in the full run and passes alone.
+  One review on Opus: 1 Important fixed (a local page's tab could be steered to any file; a navigation policy now
+  stops it). The pane-browser probe's frame-timing step failed three runs, then passed seven on the same code.
+- **Next:** your on-screen checks (note 93, chores 33–35); not pushed.
+
 ### 2026-11-26 — Chore 32: the plan tab ticks a closing task
 
 - **What:** your words: "last task is still hanging when its actually done" (☰ 8/9 on the built chores 25–30

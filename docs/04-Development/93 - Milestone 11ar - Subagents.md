@@ -1741,30 +1741,71 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     No ui-shots scene reads a plan file and its commits (the plan scenes use a todo list), so none was run.
   - [ ] Your check: on the next plan built here, the ☰ tab ticks each task as it lands and reads all done after
     the closing docs commit (unticked boxes or not).
-- **Chore 33 (queued, not built): the send button follows the state; the box's bottom row, measured** (your words,
-  2026-11-26, after two outside critiques of the agent box: "what do you think?" → "based on your suggestions, what
-  should we build?" → "give me sample mockups" → "queue 33 and 34 and build"; mockup
-  /tmp/fuxx-mockups/box-states.html, deleted after the build). (1) The round button at the box's bottom right: empty
-  box → a quiet ↑ (muted fill, muted arrow); text typed → a solid terracotta ↑ (the theme's accent, white arrow, ⏎
-  sends); the agent running → Stop in a solid dark fill with a light square (at least 3:1 against the box, WCAG
-  1.4.11; today's dusty rose reads as disabled). Both themes. (2) The usage gauge's red badge gets a 2 pt ring in the
-  box's own colour, so it reads cut out of the gauge instead of sitting on its ring. (3) A scene check measures the
-  bottom row's items (`+`, model · effort ⌄, clock, gauge, mode ⌄, the button) on one centre line with even gaps;
-  fix only what is actually off, then pin it.
-- **Chore 34 (queued, not built): finished corner tabs shrink to their icon** (your words, 2026-11-26: the critique's
-  "single count replaces the clutter" → my take (keep the three, shrink the finished) → "I aggree, but can we remove
-  the checklist? the color says everything" → mockup → "queue 33 and 34 and build"). A corner tab (🤖 subagents,
-  ▣ shells, ☰ plan) whose work is all finished shows only its icon, in green, with no count and no ✓; an unfinished
-  one keeps its `x/n`; "needs you" always shows in full, red. Not colour alone: the missing number says done too.
-  Hovering a green icon says "10 of 10 subagents done"; a click still opens its list. Pin it in the corner-tab
-  scenes (running, some done, all done, needs you).
-- **Chore 35 (queued, not built): a local HTML page opens in fuxx's browser** (your words, 2026-11-26: "wait is it
-  bug? why is it opened in my browser instead on fuxx browser?" → found: the `open` shim fuxx writes sends only a
-  lone http(s) address to `fuxx link open`; a local file goes to macOS's open, so `open /tmp/…/page.html` opened the
-  default browser → "both" (serve it on localhost now, and queue this)). First check fuxx's browser can load a
-  `file://` page (and local images/CSS beside it); if it can, the shim (and `xdg-open`/`$BROWSER`) also sends a lone
-  `.html`/`.htm` path or `file://` address there, as a clicked link would ("Open links in"); PDFs, folders and other
-  files still go to macOS untouched. If it can't, say so here and stop. Tests for the shim's cases.
+- **Chore 33: the send button follows the state; the box's bottom row, measured** (your words, 2026-11-26, after two
+  outside critiques of the agent box: "what do you think?" → "based on your suggestions, what should we build?" →
+  "give me sample mockups" → "queue 33 and 34 and build"; mockup /tmp/fuxx-mockups/box-states.html). **Built:**
+  (1) Empty and typed already matched the mockup (a quiet ↑; the accent with its arrow). Stop is now a solid button in
+  the theme's text colour with its square in the box's colour: dark with a light square on a light theme, light with
+  a dark square on a dark one; at rest and under the pointer it is at least 3:1 on the box and on its ring, its
+  square 3:1 on it (a test over every theme). Stopping… takes the quiet empty look; Force stop keeps the waiting
+  colour on its square. (2) The gauge's red badge (and the clock's context dot, the same badge) wears a 2 pt ring
+  in the box's colour. (3) A new scene, `agent-box-bottom-row` (empty, typed, running), measures the row. Two things
+  were off. The round button sat 1 pt above and left of its notch and of the controls' centre line: it was placed past
+  the outer box's 1 pt edge, but GPUI draws that edge over its padding, so the inner box (and the notch cut round it)
+  sits 5 pt in, not 6. The button is now flush with the box's corner, and the outer corner's radius is 1 pt smaller,
+  so it stays concentric. The clock's full circle met the gauge 2 pt closer than the row's other ink gaps (13 vs 15); the
+  clock now has 2 pt more room. The mode pill also ends exactly 8 before the cut, as `agent-box-send-notch` pins.
+  Commit `fe6674d`.
+  - **Rulings:** a dark Stop can't reach 3:1 on a dark box, so on dark themes Stop is light (the theme's text) with a
+    dark square; the clock's warning dot got the same ring as the gauge's (one badge, the same problem).
+  - [ ] Your check: in Latte, Stop is a dark circle with a light square, and the gauge's red dot sits in a light ring
+    clear of the arc; in Mocha, Stop is a light circle with a dark square; the bottom row looks level.
+- **Chore 34: finished corner tabs shrink to their icon** (your words, 2026-11-26: the critique's "single count
+  replaces the clutter" → my take (keep the three, shrink the finished) → "I aggree, but can we remove the
+  checklist? the color says everything" → mockup → "queue 33 and 34 and build"). **Built:** a 🤖, ▣ or ☰ tab whose
+  work is all finished draws only its icon, in green (the plan's too, which was dim with `n/n ✓`); its tooltip says
+  "10 of 10 subagents done" ("3 of 3 shells done", "9 of 9 tasks done  ⌥⌘P"; one shared `corner_tabs::done_tip`).
+  An unfinished tab keeps `x/n`; a shell failure (`x/n ✕`) or a subagent that needs you stays in full, in red. When
+  each tab shows, and that it stays until your next message, is unchanged: only the words, the colour and the tip
+  changed. The mockup's four states are new scenes: `agent-corner-tabs-running`, `-some-done`, `-all-done` (each
+  finished tab still opens and closes its list) and `-needs-you`. `agent-shells-done` pins the icon-only tab. Commit
+  `40c0d7b`.
+  - **Rulings:** the finished plan tab's tip keeps its shortcut (⌥⌘P), as before.
+  - [ ] Your check: when a turn's subagents and shells are all done, their tabs are small green icons and hovering one
+    says how many are done; one still running shows its count.
+- **Chore 35: a local HTML page opens in fuxx's browser** (your words, 2026-11-26: "wait is it bug? why is it opened in
+  my browser instead on fuxx browser?" → found: the `open` shim fuxx writes sent only a lone http(s) address to `fuxx
+  link open` → "both" (serve it on localhost now, and queue this)). **First, the check: fuxx's browser can load a
+  `file://` page.** The browser self-test (`fuxx __browser-probe`, run by path) now loads a temp `page.html` with
+  `style.css` beside it and an image in a folder under it. The style applies and the image decodes. **Built:** the
+  `open`, `xdg-open` and `$BROWSER` shim now also hands over a lone existing `.html`/`.htm` file (relative paths made
+  absolute against where the program runs) or a page's `file://` address (also after `-u`/`--url` or `-a
+  <fuxx-browser>`). `fuxx link open` turns an absolute page path into its percent-encoded `file://` address (spaces,
+  `#`, accents). The page then lands where "Open links in" says, as a web link does. Untouched (the real open): PDFs,
+  folders (even one named `x.html`), missing files, other files' `file://` addresses, flags, two or more files, and
+  any failure. A clicked `file://` link in output still opens nothing; only a program's own opening may open a local
+  page. Shim tests run the real script with a fake `fuxx`; `link-auto-open` opens a local page through `link.open`.
+  Commit `f81fe29`.
+  - **Review finding, fixed:** once a tab held a `file://` page, a script (or `browser.eval`) could steer it to any
+    file on disk. Every navigation now asks `browser_url::may_navigate` (no `file://` but a page). The probe tries
+    `location.href` to a text file beside the page: the page stays. Commit `dfce0f1`.
+  - **Rulings:** a `file://` address goes to fuxx only when it names a `.html`/`.htm` page; `open
+    file:///…/notes.txt` still opens outside. `fuxx link open /abs/page.html` works by hand too.
+  - [ ] Your check: in a fuxx terminal, `open` a mockup's `.html` (e.g. `open my-app/index.html`): it opens in
+    fuxx's browser with its images and styles; `open report.pdf` still opens Preview.
+- **Checks for chores 33–35.** Tests 3032 green. No new clippy warnings in the files touched (both runs). `cargo fmt
+  --check` clean. Scenes since `607dd46`: 371 passed in the shards, 1 failed (`agent-tab-wide`, display-dependent,
+  as on master). The serial part hung in `file-tab-md-mermaid` (it passes alone, in 18 s); the other serial scenes
+  ran one by one and passed. The visual fingerprints (`tests/ui-shots-ref`) were not refreshed. The browser probe
+  passes. The pane-browser probe failed three runs at "the web view follows a bounds change on the next frame", then
+  passed seven times on the same code. That looks like a timing race in that check, not this change. Plan:
+  `docs/superpowers/plans/2026-11-26-chores-33-35.md`.
+  - **Review** (one whole-change review on Opus): 1 Important (a `file://` tab could be steered to any file), fixed
+    with tests first. Deferred minors: the shim and `is_local_page` read `file:///x/a.pdf?v=b.html` differently (the
+    real open still runs); a `file://` page in the address bar can't be re-entered with Enter; the probe checks files
+    beside and below a page, not `../`; the badge's ring shows as a halo on a hovered clock or gauge; Force stop's
+    square isn't pinned apart from Stop's on dark themes; a failed subagent counts as done (green, "N of N subagents
+    done").
 - **Chore 36 (queued, not built): the files and checks popovers look like the corner ones** (your words,
   2026-11-26, with two pictures of the status line's `N changed` and `checks` popovers: "I don't like how these 2
   presented. the fonts the gaps, the sizes on the subagent, shell, tasks popover is cooler." → my take → "cool! love
