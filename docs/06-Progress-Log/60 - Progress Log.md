@@ -50,7 +50,7 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
   45909787102: test, both slices and the release job green; "fuxx 0.13.12" is the latest release with
   `fuxx-0.13.12.zip` (30 MB). It carries chore 37: a long question no longer runs off the question card's edge.
   Cleanups: the shots' PNGs removed, `prune-target` found nothing stale, `target/` at 11 GB (under the 30 GB clean
-  line), no test scratch left in `$TMPDIR`.
+  line), no test scratch left in `$TMPDIR`. The landing site shipped with it: its download is `fuxx-0.13.12.zip`.
 - **Next task:** your on-screen checks (note 93, chores 32–37).
 
 ### 2026-11-26 — Chore 37: a long question no longer runs off the card's edge
