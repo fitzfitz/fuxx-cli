@@ -464,7 +464,7 @@ impl AgentTab {
                 match answer {
                     // Answered (spec B-B): one quiet line, a check or a cross before it.
                     Some(answer) => {
-                        let allowed = matches!(answer, Answer::Allowed | Answer::AlwaysAllowed);
+                        let allowed = answer.allows();
                         let withdrawn = *answer == Answer::Withdrawn;
                         // Withdrawn (the agent stopped waiting): the question's "Not answered"
                         // look, a dim circle and why on hover.

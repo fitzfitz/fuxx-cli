@@ -1163,6 +1163,7 @@ impl Translator for AgyTranslator {
             }
             Action::Allow { .. }
             | Action::AlwaysAllow { .. }
+            | Action::AllowInto { .. }
             | Action::Deny { .. }
             // Print mode answers its own `ask_question` (skipped) and has no channel for
             // yours: its cards are answered by an ordinary message (`questions_by_message`).

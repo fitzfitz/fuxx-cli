@@ -94,6 +94,11 @@ pub(super) const SCENES: &[Scene] = &[
     scene("agent-plan-reading", agent_plan_reading, PLAN_CARD),
     scene("agent-plan-approved", agent_plan_approved, PLAN_CARD),
     scene(
+        "agent-plan-approved-auto",
+        agent_plan_approved_auto,
+        PLAN_CARD,
+    ),
+    scene(
         "agent-plan-long-command",
         agent_plan_long_command,
         PLAN_CARD,
@@ -1089,6 +1094,12 @@ fn rich_plan(long: bool) -> String {
 
 /// You ask for a plan; Claude, in plan mode, read and searched, then asks you to approve it.
 fn to_plan(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, long: bool) {
+    to_plan_as(cx, tab, long, false);
+}
+
+/// `to_plan`; `wire`: the ask arrives as Claude's own `can_use_tool` line, through the tab's
+/// translator, so an answer to it is written as Claude would get it (chore 26).
+fn to_plan_as(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, long: bool, wire: bool) {
     feed(cx, tab, |t, cx| {
         t.send(
             "Retries keep hitting the old host after a failover. Plan the fix first.".into(),
@@ -1104,6 +1115,19 @@ fn to_plan(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, long: bool) {
             .events(),
     );
     let md = rich_plan(long);
+    let file = format!("{CWD}/.claude/plans/retry-current-endpoint.md");
+    if wire {
+        give(cx, tab, events);
+        let line = json!({"type": "control_request", "request_id": "plan-1",
+            "request": {"subtype": "can_use_tool", "tool_name": "ExitPlanMode",
+                "display_name": "ExitPlanMode", "input": {"plan": md, "planFilePath": file},
+                "tool_use_id": "toolu_plan_1"}})
+        .to_string();
+        feed(cx, tab, |t, cx| {
+            t.shot_process(crate::agent_process::ProcessEvent::Line(line), cx)
+        });
+        return;
+    }
     events.push(Event::Permission {
         id: "plan-1".into(),
         tool: "ExitPlanMode".into(),
@@ -1114,9 +1138,7 @@ fn to_plan(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, long: bool) {
         plan: Some(crate::providers::PlanDraft {
             title: crate::providers::plan_title(&md),
             markdown: md,
-            file: Some(PathBuf::from(format!(
-                "{CWD}/.claude/plans/retry-current-endpoint.md"
-            ))),
+            file: Some(PathBuf::from(file)),
         }),
     });
     give(cx, tab, events);
@@ -1200,29 +1222,7 @@ pub(super) fn agent_plan_approved() {
             t.answer(crate::agent_conversation::Answer::AlwaysAllowed, cx)
                 .ok();
         });
-        let mut events = vec![Event::Mode("acceptEdits".into())];
-        // Its calls numbered after the planning turn's, so no id is used twice.
-        let after_plan = Turn {
-            lines: Vec::new(),
-            n: 10,
-        };
-        events.extend(
-            after_plan
-                .say("Approved. Starting with `retry.rs`.")
-                .edit(
-                    "src/retry.rs",
-                    "self.state.base_url",
-                    "self.client.current()",
-                )
-                .edit("src/client.rs", "pub base_url: Url,", "")
-                .call(
-                    "Bash",
-                    json!({"command": "cargo test retry", "description": "Run the retry tests"}),
-                    None,
-                )
-                .events(),
-        );
-        give(cx, tab, events);
+        after_approval(cx, tab, "acceptEdits");
         let _ = frame_fresh(cx, window);
         cx.read(|cx| {
             let t = tab.read(cx);
@@ -1257,6 +1257,94 @@ pub(super) fn agent_plan_approved() {
             "{n}: read only, nothing under it"
         );
     });
+}
+
+/// Chore 26: "Approve · Auto mode" clicked on the waiting plan: Claude gets the allow with the
+/// session put in Auto, the mode chip shows Auto at once, and the card folds to "Plan approved ·
+/// Auto mode ✓" (the scene ends on that line).
+pub(super) fn agent_plan_approved_auto() {
+    shoot("agent-plan-approved-auto", DIMS, |n, cx, window, tab, _| {
+        to_plan_as(cx, tab, false, true);
+        let _ = frame_fresh(cx, window);
+        let button = part(cx, tab, n, "plan-approve-into");
+        let auto = part(cx, tab, n, "plan-approve-auto");
+        assert!(
+            (button.center().y - auto.center().y).abs() < px(1.),
+            "{n}: in the answers' row"
+        );
+        click(cx, window, button);
+        let lines: Vec<serde_json::Value> = cx
+            .read(|cx| tab.read(cx).shot_written())
+            .iter()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let answer = lines
+            .iter()
+            .find(|v| v["response"]["request_id"] == "plan-1")
+            .unwrap_or_else(|| panic!("{n}: the plan answered: {lines:?}"));
+        let r = &answer["response"]["response"];
+        assert_eq!(r["behavior"], "allow", "{n}");
+        assert_eq!(
+            r["updatedPermissions"],
+            json!([{"type": "setMode", "mode": "auto", "destination": "session"}]),
+            "{n}"
+        );
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).mode().map(str::to_string))
+                .as_deref(),
+            Some("auto"),
+            "{n}: the chip shows Auto at once"
+        );
+        after_approval(cx, tab, "auto");
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).mode().map(str::to_string))
+                .as_deref(),
+            Some("auto"),
+            "{n}: Claude's report agrees"
+        );
+        let _ = frame_fresh(cx, window);
+        let line = part(cx, tab, n, "plan-answered");
+        assert!(line.size.height <= px(40.), "{n}: one line ({line:?})");
+        cx.read(|cx| {
+            assert!(tab.read(cx).shot_items().iter().any(|i| matches!(
+                i,
+                Item::Permission {
+                    answer: Some(crate::agent_conversation::Answer::ApprovedInto { mode, .. }),
+                    ..
+                } if mode == "auto"
+            )))
+        });
+    });
+}
+
+/// Claude's turn after a plan approved into `mode`: it reports the mode, edits two files and
+/// runs the tests.
+fn after_approval(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, mode: &str) {
+    {
+        let mut events = vec![Event::Mode(mode.into())];
+        // Its calls numbered after the planning turn's, so no id is used twice.
+        let after_plan = Turn {
+            lines: Vec::new(),
+            n: 10,
+        };
+        events.extend(
+            after_plan
+                .say("Approved. Starting with `retry.rs`.")
+                .edit(
+                    "src/retry.rs",
+                    "self.state.base_url",
+                    "self.client.current()",
+                )
+                .edit("src/client.rs", "pub base_url: Url,", "")
+                .call(
+                    "Bash",
+                    json!({"command": "cargo test retry", "description": "Run the retry tests"}),
+                    None,
+                )
+                .events(),
+        );
+        give(cx, tab, events);
+    }
 }
 
 /// Chore 23 (rows painted over each other after a plan was approved): a long plan, opened,

@@ -104,7 +104,7 @@ impl AgentTab {
         // Answered, and not opened again: one line.
         let reopened = self.plan_reopened.contains(id);
         if let (Some(answer), false) = (answer, reopened) {
-            let approved = matches!(answer, Answer::Allowed | Answer::AlwaysAllowed);
+            let approved = answer.allows();
             let el = div()
                 .id(SharedString::from(format!("plan-answered-{ix}")))
                 .w_full()
@@ -380,6 +380,27 @@ impl AgentTab {
             .gap(px(6.))
             .text_size(px(crate::ui_tokens::text::META))
             .child(self.marked("plan-approve-auto", approve))
+            // Chore 26: approve and put the session in the provider's plan mode (Claude: Auto).
+            .when_some(self.plan_into(), |d, (mode, label)| {
+                let answer = Answer::ApprovedInto {
+                    mode: mode.to_string(),
+                    label: label.to_string(),
+                };
+                d.child(
+                    self.marked(
+                        "plan-approve-into",
+                        slim(button(
+                            SharedString::from(format!("{id}-approve-into")),
+                            SharedString::from(format!("Approve \u{b7} {label} mode")),
+                            false,
+                            c,
+                        ))
+                        .on_click(on_tab(&look.view, move |this, cx| {
+                            this.answer_plan(ix, answer.clone(), cx);
+                        })),
+                    ),
+                )
+            })
             .child(
                 slim(button(
                     SharedString::from(format!("{id}-approve-each")),
@@ -405,6 +426,15 @@ impl AgentTab {
                     .child("Keep planning")
                     .on_click(on_tab(&look.view, |this, cx| this.keep_planning(cx))),
             )
+    }
+
+    /// The mode a plan can be approved into, and its picker label: the provider's
+    /// `plan_into_mode`, when it is one of its modes (chore 26).
+    pub(super) fn plan_into(&self) -> Option<(&'static str, &'static str)> {
+        let provider = self.provider?;
+        let mode = provider.plan_into_mode()?;
+        let choice = provider.info().modes.iter().find(|m| m.id == mode)?;
+        Some((choice.id, choice.label))
     }
 
     /// Whether you are writing a note for a waiting plan: Keep planning was pressed, or the box

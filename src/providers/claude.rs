@@ -450,6 +450,11 @@ impl Provider for Claude {
         true
     }
 
+    /// A plan approved into Auto (`claude-plan-auto.jsonl`).
+    fn plan_into_mode(&self) -> Option<&'static str> {
+        Some("auto")
+    }
+
     fn applies(&self, change: ChangeKind) -> Applies {
         match change {
             ChangeKind::Model | ChangeKind::Effort | ChangeKind::Mode => Applies::Live,
@@ -2219,6 +2224,19 @@ impl Translator for ClaudeTranslator {
                 }
                 vec![control_response(id, response)]
             }
+            // Chore 26: the allow carries the session's new mode, as Claude Code's own plan
+            // approval does (`updatedPermissions`, destination session).
+            Action::AllowInto { id, mode } => {
+                let Some((input, _, _)) = self.pending.remove(id) else {
+                    return Vec::new();
+                };
+                vec![control_response(
+                    id,
+                    json!({"behavior": "allow", "updatedInput": input,
+                        "updatedPermissions": [{"type": "setMode", "mode": mode,
+                            "destination": "session"}]}),
+                )]
+            }
             Action::SetModel { model } => {
                 let id = self.set_id();
                 let request = json!({"subtype": "set_model", "model": model});
@@ -3353,6 +3371,52 @@ mod tests {
         });
         assert_eq!(keep["behavior"], "deny");
         assert!(keep["message"].as_str().unwrap().contains("split step 2"));
+    }
+
+    /// Chore 26: Approve · Auto mode allows the plan and puts the session in Auto, as recorded
+    /// (`claude-plan-auto.jsonl`: Claude reports `permissionMode: "auto"` at once and the Write
+    /// after it asks nothing).
+    #[test]
+    fn approving_a_plan_into_auto_sets_auto() {
+        assert_eq!(CLAUDE.plan_into_mode(), Some("auto"));
+        let text = include_str!("fixtures/claude-plan-auto.jsonl");
+        let line = text
+            .lines()
+            .find(|l| l.contains("can_use_tool") && l.contains("ExitPlanMode"))
+            .expect("the plan's request");
+        let rid = serde_json::from_str::<Value>(line).unwrap()["request_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut t = CLAUDE.translator();
+        t.decode(line);
+        let out = t.encode(&Action::AllowInto {
+            id: rid,
+            mode: "auto".into(),
+        });
+        let v: Value = serde_json::from_str(&out[0]).unwrap();
+        let r = &v["response"]["response"];
+        assert_eq!(r["behavior"], "allow");
+        assert!(
+            r["updatedInput"]["plan"].is_string(),
+            "its input, unchanged"
+        );
+        assert_eq!(
+            r["updatedPermissions"],
+            json!([{"type": "setMode", "mode": "auto", "destination": "session"}])
+        );
+        let after: Vec<Event> = text
+            .lines()
+            .skip_while(|l| !(l.contains("can_use_tool") && l.contains("ExitPlanMode")))
+            .skip(1)
+            .flat_map(|l| t.decode(l))
+            .collect();
+        assert!(
+            after
+                .iter()
+                .any(|e| matches!(e, Event::Mode(m) if m == "auto"))
+        );
+        assert!(!after.iter().any(|e| matches!(e, Event::Permission { .. })));
     }
 
     #[test]

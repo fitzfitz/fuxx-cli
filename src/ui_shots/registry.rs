@@ -369,6 +369,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-plan-waiting",
     "agent-plan-reading",
     "agent-plan-approved",
+    "agent-plan-approved-auto",
     "agent-plan-long-command",
     "agent-plan-waiting-narrow",
     "agent-shells-with-plan",

@@ -340,6 +340,11 @@ pub trait Provider: Sync {
     fn mode_mid_turn(&self) -> bool {
         false
     }
+    /// The mode a plan can be approved into (chore 26: Claude Code's own "approve and use auto
+    /// mode"), one of `ProviderInfo::modes`. Default: none.
+    fn plan_into_mode(&self) -> Option<&'static str> {
+        None
+    }
     /// The folders the agent itself knows (its own list of projects), under your `home`.
     /// Reads files: call it off the UI thread. Default: none.
     fn known_folders(&self, _home: &Path) -> Vec<PathBuf> {
@@ -941,6 +946,12 @@ pub enum Action {
         effort: String,
     },
     SetMode {
+        mode: String,
+    },
+    /// Allow request `id` and switch the session to `mode` with it (chore 26: a plan approved
+    /// into `Provider::plan_into_mode`). A provider with no such answer writes nothing.
+    AllowInto {
+        id: String,
         mode: String,
     },
     /// Put the files back as they were before message `message` (`dry_run`: only say what would

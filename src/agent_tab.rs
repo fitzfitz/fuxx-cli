@@ -449,6 +449,7 @@ pub fn answer_line(answer: &Answer) -> String {
         Answer::AlwaysAllowed => "Always allowed".into(),
         Answer::Denied(Some(why)) => format!("Denied: {why}"),
         Answer::Denied(None) => "Denied".into(),
+        Answer::ApprovedInto { label, .. } => format!("Allowed \u{b7} {label} mode"),
         Answer::Expired => "Expired".into(),
         Answer::Withdrawn => "Not answered".into(),
     }
@@ -484,6 +485,7 @@ pub fn plan_answer_line(answer: &Answer) -> String {
     match answer {
         Answer::AlwaysAllowed => "Plan approved \u{b7} auto-accept edits \u{2713}".into(),
         Answer::Allowed => "Plan approved \u{2713}".into(),
+        Answer::ApprovedInto { label, .. } => format!("Plan approved \u{b7} {label} mode \u{2713}"),
         Answer::Denied(Some(note)) => format!("Kept planning: {note}"),
         Answer::Denied(None) => "Kept planning".into(),
         other => answer_line(other),
@@ -3914,6 +3916,10 @@ impl AgentTab {
         let action = match &answer {
             Answer::Allowed => Action::Allow { id: id.clone() },
             Answer::AlwaysAllowed => Action::AlwaysAllow { id: id.clone() },
+            Answer::ApprovedInto { mode, .. } => Action::AllowInto {
+                id: id.clone(),
+                mode: mode.clone(),
+            },
             Answer::Denied(reason) => Action::Deny {
                 id: id.clone(),
                 reason: reason.clone(),
@@ -3924,6 +3930,10 @@ impl AgentTab {
             },
         };
         self.write(&action);
+        // Into a mode (chore 26): the chip shows it now, as if the agent had reported it.
+        if let Answer::ApprovedInto { mode, .. } = &answer {
+            self.reported_mode(mode, cx);
+        }
         self.conversation.answered(&id, answer);
         self.plan_note = false;
         self.after_change(true, cx);
@@ -7263,6 +7273,16 @@ mod tests {
             plan_answer_line(&Answer::AlwaysAllowed),
             "Plan approved \u{b7} auto-accept edits \u{2713}"
         );
+        // Chore 26: approved into a mode, it says which.
+        let auto = Answer::ApprovedInto {
+            mode: "auto".into(),
+            label: "Auto".into(),
+        };
+        assert_eq!(
+            plan_answer_line(&auto),
+            "Plan approved \u{b7} Auto mode \u{2713}"
+        );
+        assert_eq!(answer_line(&auto), "Allowed \u{b7} Auto mode");
         assert_eq!(plan_answer_line(&Answer::Allowed), "Plan approved \u{2713}");
         assert_eq!(
             plan_answer_line(&Answer::Denied(Some("split it".into()))),

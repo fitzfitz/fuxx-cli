@@ -18,10 +18,26 @@ pub enum Answer {
     Allowed,
     AlwaysAllowed,
     Denied(Option<String>),
+    /// Allowed, and the session switched to mode `mode` (`label`, its picker name) with it: a
+    /// plan approved into Auto (chore 26, note 93).
+    ApprovedInto {
+        mode: String,
+        label: String,
+    },
     /// The turn ended (or the process died) before you answered.
     Expired,
     /// The agent stopped waiting before you answered (it withdrew the ask).
     Withdrawn,
+}
+
+impl Answer {
+    /// The request was allowed (any way).
+    pub fn allows(&self) -> bool {
+        matches!(
+            self,
+            Answer::Allowed | Answer::AlwaysAllowed | Answer::ApprovedInto { .. }
+        )
+    }
 }
 
 /// How a question of the agent's ended (batch 3, chore 8).
