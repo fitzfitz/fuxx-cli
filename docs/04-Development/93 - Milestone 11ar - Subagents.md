@@ -1544,3 +1544,9 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     - [ ] the Bash row reads "running in the background · M:SS" and stops when the shell ends
     - [ ] a shell that ends while you're on another tab sends one banner (watch for a second one from Claude's wake turn)
     - [ ] a failed shell turns the tab red with ✕ until you open the popover; all done shows green `n/n ✓` until your next message
+- **Chore 17 (queued, not built): one working mark, not two** (your words, 2026-11-26: "the loading is kind of a
+  duplicated, it looks not good" → four options → "go with B, put it in a chore list"). While the chat's status line
+  shows ("◌ Cultivating… · Searching … · 0:17"), the folder tab drops its own status mark (the same arc, right
+  under it); the tab gets its mark back when the status line goes (idle, or "Done" faded). The spinner stays beside
+  the words it describes. Not chosen: A (drop the status line's mark), C (the status line inside the tab), D (an
+  accent bar instead of the status line's spinner).
