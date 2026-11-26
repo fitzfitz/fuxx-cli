@@ -44,6 +44,17 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-25 — Chore 16: background shells beside the tasks tab
+
+- **Did:** Claude's background shells now show in a `▣ done/all` tab beside the plan tab. Its popover gives each
+  shell's time, command and live last line, ■ stops one, and a row opens its output. The Bash row reads
+  "running in the background · M:SS", and a banner goes out when a shell ends while you're away. The stream shape
+  came from a new recording. One whole-change review; its 2 Important findings fixed (note 93). Claude only (agy
+  sends no task events).
+- **Learned:** a foreground Bash also sends `local_bash` `task_started` (only `is_backgrounded` tells them apart),
+  and a background call's result was being read as a passed check.
+- **Next task:** your on-screen checks (note 93, chore 16's six items).
+
 ### 2026-11-25 — Chore 15: the plan tab follows a plan in another repo
 
 - **Did:** the ☰ tab never moved while the landing site's plan was built: it read git in the tab's folder, not the

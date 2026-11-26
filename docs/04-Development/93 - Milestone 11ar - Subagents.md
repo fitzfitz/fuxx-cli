@@ -1497,3 +1497,50 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   subject starts with a task's planned commit message (the backticked text on its "commit" line,
   `planned_subjects`) marks it done (`match_planned`). Tests 2984 green.
   - [ ] Your check: a plan in another repo ticks its tasks off as their commits land.
+- **Chore 16: background shells, beside the tasks tab** (your words, 2026-11-25: "we now dont have shells. I cannot
+  see what shells are running. where do you think we should put it" → mockups → "love the popover, but is it good
+  to put it beside tasks?" → "make it: :terminalicon x/n just like tasks" → "make it a chore and build it"; design
+  `docs/superpowers/specs/2026-11-25-background-shells-design.md`, plan `docs/superpowers/plans/2026-11-25-background-shells.md`).
+  Claude's `run_in_background` Bash calls (a dev server, a long build, a watcher) ran unseen.
+  - **Built:** Claude's reader (`providers/claude/shells.rs`) turns a `local_bash` task with `is_backgrounded:
+    true` into `ShellStarted` once its call's result names the output file, and `task_notification` into
+    `ShellEnded` (`completed` with a non-zero exit is a failure). A foreground Bash is a `local_bash` task too, so
+    it is left out. ■ sends `stop_task`, the same request a subagent's stop uses. A recording
+    (`claude-background-shells.jsonl`, new `background-shells` scenario) showed this works for a shell. The state
+    (`agent_shells.rs`) lives in the conversation. The **shells tab** `▣ 1/3` (Lucide terminal) sits on the plan
+    tab's left in one corner tab, flush right; alone it takes the corner. It is peach while a shell runs, green
+    `3/3 ✓` until your next message, and red `1/2 ✕` after a failure until you open it. The **popover** (over the
+    chat, its right edge on the box's) shows "1 of 3 done · 2 running", then one row per shell: the running arc,
+    ✓ or ✕, the description, a ticking time, the command, the last output line, and ■. Finished rows dim and drop
+    off after 2 minutes. A row opens its output file in a file tab. The last lines are read off the UI thread once
+    a second, only while the popover is open (`agent_shells_view.rs`). **In the chat** the Bash row reads "running
+    in the background · 4:12" under the arc. A **banner** goes out when a shell ends while you aren't on the tab:
+    "Background shell done", then "Run the tests · done in 6:40" ("· failed", "· stopped"). It goes through the
+    agent banner's shared tail (`tell_agent`). A background `cargo test` is no longer counted as "checks pass"
+    while it runs.
+  - **Rulings:** the plan tab and the shells tab share one corner tab. Stopped shells count as done and show a dim
+    ✕, and only a failure turns the tab red. The tab counts finished shells until your next message, while popover
+    rows drop off after 2 minutes ("All finished" when none are left). A row click closes the popover as the file
+    tab opens. **Claude only:** agy's `run_command` goes async on its own (`WaitMsBeforeAsync`) and sends no task
+    events.
+  - **Not covered:** when a step has 3 or more calls it folds into tracks, so "running in the background" shows only
+    on readable rows (the tab and popover still show every shell). `/clear` leaves the shells as they are (not
+    recorded whether Claude stops them).
+  - **Review** (one whole-change review): 2 Important findings, both fixed. After a crash or restart, a Bash row
+    kept saying "running in the background". After your message took the tab, its popover stayed open unseen
+    (and `/` opened nothing). Deferred minors: an open popover with nothing running doesn't redraw to drop old
+    rows; there may be two banners (the shell's, then Claude's wake turn's Done); after a crash the stopped shells
+    turn the tab green; in a resumed conversation a background `cargo test` may read as passed; the reader keeps
+    the command of a background call that never started.
+  - **Commits:** `37a70c3` (events and the reader), `7a2753f` (the state), `9bf9010` (tab, popover, chat row,
+    banner), `c5e6861` (scenes, the background-check fix), `25ae2a3` (review fixes).
+  - **Checks.** Tests 3001 green. No new clippy warnings in the files touched. `cargo fmt --check` clean. The
+    scenes these touch: 375 passed, 1 failed (`agent-tab-wide`, display-dependent, as on master). New scenes:
+    `agent-shells-with-plan`, `-alone`, `-done`, `-failed`, `-popover`, `-cleared`.
+  - **Checklist for you** (GUI only, in a build with this):
+    - [ ] ask Claude for a background shell (a dev server): `▣ 0/1` appears beside the plan tab (or alone in the corner)
+    - [ ] the popover: its time ticks, the last output line follows the shell, and ■ stops it
+    - [ ] a row opens the output file in a file tab that follows it as it grows
+    - [ ] the Bash row reads "running in the background · M:SS" and stops when the shell ends
+    - [ ] a shell that ends while you're on another tab sends one banner (watch for a second one from Claude's wake turn)
+    - [ ] a failed shell turns the tab red with ✕ until you open the popover; all done shows green `n/n ✓` until your next message
