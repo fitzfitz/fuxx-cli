@@ -72,12 +72,9 @@ pub struct NameInput {
     /// Drawn without its own edge and fill (the box it sits in has them: a browser tab's
     /// address field).
     bare: bool,
-    /// Its caret's blink (the 2026-11-24 chores): `caret_on` is what the last render decided;
-    /// `blink_seen` the text, selection and focus it saw (a change restarts the blink); one
+    /// Its caret's blink (the 2026-11-24 chores; `caret_blink::Blinker` since chore 28): one
     /// timer at a time, only while the caret will flip again.
-    blink: crate::caret_blink::CaretBlink,
-    caret_on: bool,
-    blink_seen: (String, Range<usize>, bool),
+    blink: crate::caret_blink::Blinker,
     blink_timer: Option<gpui::Task<()>>,
     /// ⌘Z / ⇧⌘Z (the 2026-11-24 chores): the text and selection before each step.
     history: crate::undo_history::UndoHistory<(String, Range<usize>)>,
@@ -110,9 +107,7 @@ impl NameInput {
             last_origin: None,
             last_bounds: None,
             bare: false,
-            blink: crate::caret_blink::CaretBlink::new(std::time::Instant::now()),
-            caret_on: true,
-            blink_seen: (String::new(), 0..0, false),
+            blink: crate::caret_blink::Blinker::new(std::time::Instant::now()),
             blink_timer: None,
             history: Default::default(),
             _blur: blur,
@@ -687,29 +682,18 @@ impl NameInput {
     /// The caret's blink for this render: a change of text, selection or focus makes it solid
     /// again; the next flip, if any, is one timer that redraws only this field.
     fn blink(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let now = std::time::Instant::now();
+        use crate::caret_blink::{drive, seen_of};
         let focused = self.focus_handle.is_focused(window);
-        let seen = (self.text.clone(), self.selected.clone(), focused);
-        if self.blink_seen != seen {
-            self.blink_seen = seen;
-            self.blink.last_input = now;
-            self.blink_timer = None;
-        }
-        self.blink.focused = focused;
-        self.blink.window_active = window.is_window_active();
-        self.blink.enabled = cx.global::<Appearance>().cursor_glow;
-        self.caret_on = self.blink.shown(now);
-        if self.blink_timer.is_none()
-            && let Some(wait) = self.blink.next_flip(now)
-        {
-            self.blink_timer = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(wait).await;
-                this.update(cx, |this, cx| {
-                    this.blink_timer = None;
-                    cx.notify();
-                })
-                .ok();
-            }));
+        let seen = seen_of((&self.text, self.selected.start, self.selected.end, focused));
+        let wait = self.blink.update(
+            seen,
+            focused,
+            window.is_window_active(),
+            cx.global::<Appearance>().cursor_glow,
+            std::time::Instant::now(),
+        );
+        if let Some(wait) = wait {
+            self.blink_timer = Some(drive(cx, wait, |this: &mut Self| &mut this.blink));
         }
     }
 }
@@ -822,7 +806,7 @@ impl Element for NameText {
                 input.focus_handle.clone(),
                 input.caret(),
                 input.selection(),
-                input.caret_on,
+                input.blink.on(),
             )
         };
         window.handle_input(

@@ -632,6 +632,12 @@ pub struct Composer {
     motion: CursorMotion,
     /// The breathing timer runs.
     breathing: bool,
+    /// The one-line boxes' thin bar instead of the terminal's cursor (chore 28: the commit
+    /// box): it blinks by `caret_blink`, its one timer redrawing only this box; no glide, glow,
+    /// trail or sparks.
+    plain_caret: bool,
+    blink: crate::caret_blink::Blinker,
+    blink_timer: Option<gpui::Task<()>>,
     /// A changed cursor setting redraws the box.
     _appearance: Subscription,
 }
@@ -690,6 +696,9 @@ impl Composer {
             key_window: None,
             motion: CursorMotion::new(Instant::now()),
             breathing: false,
+            plain_caret: false,
+            blink: crate::caret_blink::Blinker::new(Instant::now()),
+            blink_timer: None,
             _appearance: cx.observe_global::<Appearance>(|_, cx| cx.notify()),
         }
     }
@@ -699,6 +708,41 @@ impl Composer {
         if self.bare != bare {
             self.bare = bare;
             cx.notify();
+        }
+    }
+
+    /// Draw its caret as the one-line boxes' thin blinking bar, not the terminal's cursor
+    /// (chore 28: the commit box, "do not put the glow cursor").
+    pub fn set_plain_caret(&mut self, plain: bool, cx: &mut Context<Self>) {
+        if self.plain_caret != plain {
+            self.plain_caret = plain;
+            cx.notify();
+        }
+    }
+
+    /// The plain caret's blink for this render (`set_plain_caret`): solid after any change of
+    /// text, caret or focus, then one timer at a time that redraws only this box.
+    fn blink(&mut self, window: &Window, cx: &mut Context<Self>) {
+        use crate::caret_blink::{drive, seen_of};
+        let focused = self.focus_handle.is_focused(window);
+        let selection = self.buf.selection();
+        let seen = seen_of((
+            self.buf.text(),
+            self.buf.cursor(),
+            selection.start,
+            selection.end,
+            focused,
+        ));
+        let key = self.key_window.unwrap_or_else(|| window.is_window_active());
+        let wait = self.blink.update(
+            seen,
+            focused,
+            key,
+            cx.global::<Appearance>().cursor_glow,
+            Instant::now(),
+        );
+        if let Some(wait) = wait {
+            self.blink_timer = Some(drive(cx, wait, |this: &mut Self| &mut this.blink));
         }
     }
 
@@ -1452,6 +1496,9 @@ impl EntityInputHandler for Composer {
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.plain_caret {
+            self.blink(window, cx);
+        }
         let ui = cx.global::<Appearance>().theme.ui();
         // Bare, the box around it draws the edge.
         let edge = (!self.bare).then(|| {
@@ -1812,6 +1859,10 @@ impl Element for ComposerText {
                 &theme,
             ),
         };
+        let (plain, plain_on) = {
+            let input = self.input.read(cx);
+            (input.plain_caret, input.blink.on())
+        };
         let (focus_handle, caret, selection, key_window, placeholder) = {
             let input = self.input.read(cx);
             (
@@ -1878,12 +1929,16 @@ impl Element for ComposerText {
         // Empty with a beam caret, the placeholder (or the guess) starts just right of the beam
         // (`PLACEHOLDER_IN`), focused or not, so the words never move; any other shape drawn
         // there (the hollow cell without focus) moves with them, onto their first letter.
-        let words_in = if placeholder.is_some() && settings.setting == CursorShapeSetting::Bar {
-            px(cursor_look::PLACEHOLDER_IN)
+        let words_in =
+            if placeholder.is_some() && (plain || settings.setting == CursorShapeSetting::Bar) {
+                px(cursor_look::PLACEHOLDER_IN)
+            } else {
+                px(0.)
+            };
+        // The plain caret (chore 28) is drawn after the text, as the one-line boxes draw theirs.
+        let look = if plain {
+            None
         } else {
-            px(0.)
-        };
-        let look = {
             let text = self.input.read(cx).buf.text();
             let blank = CellView::blank(&theme);
             let cells: Vec<Vec<CellView>> = (0..lines.len())
@@ -2044,6 +2099,22 @@ impl Element for ComposerText {
         // A block on its cell: the letter under it in the cursor's text colour, as much as the
         // block shows through its breath; then the other shapes and the sparks over the text.
         let mut drawn_caret = None;
+        if plain
+            && plain_on
+            && focus_handle.is_focused(window)
+            && let (Some(n), Some(line)) = (caret_shown, caret_shown.and_then(|n| lines.get(n)))
+        {
+            let col = caret - rows[caret_row].start;
+            let at = Bounds::new(
+                point(
+                    left + line.x_for_index(col),
+                    bounds.top() + line_height * n as f32,
+                ),
+                size(px(cursor_look::BAR), line_height),
+            );
+            window.paint_quad(fill(at, window.text_style().color));
+            drawn_caret = Some((PaintShape::Bar, at));
+        }
         if let Some(c) = &look {
             let origin = cursor_origin(c);
             let (col, n) = c.cell;

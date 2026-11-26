@@ -304,6 +304,8 @@ impl Workspace {
                 let mut input = Composer::new(SharedString::default(), window, cx);
                 input.set_bare(true, cx);
                 input.set_max_rows(FIELD_ROWS, cx);
+                // Chore 28: the branch picker's thin blinking bar, not the glowing cursor.
+                input.set_plain_caret(true, cx);
                 input
             });
             // Esc (the field still focused; a blur also says Cancel): leave the field, and stop

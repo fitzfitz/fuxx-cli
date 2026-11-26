@@ -64,6 +64,8 @@ pub(super) const SCENES: &[Scene] = &[
             "src/git_commit.rs",
             "src/changes_panel.rs",
             "src/name_input.rs",
+            "src/composer.rs",
+            "src/caret_blink.rs",
         ],
     },
     Scene {
@@ -2115,6 +2117,24 @@ fn changes_commit_scenes() {
                         _ => {}
                     }
                     let _ = frame_fresh(cx, window);
+                    // Chore 28: the field's caret is the one-line boxes' thin bar (the branch
+                    // picker's), never the terminal's glowing cursor: no breath frames.
+                    if state == "focused" {
+                        use crate::cursor_look::{BAR, Frames, PaintShape};
+                        let (shape, at) = cx
+                            .read(|cx| input.read(cx).shot_caret())
+                            .unwrap_or_else(|| panic!("{n}: a caret drawn"));
+                        assert_eq!(shape, PaintShape::Bar, "{n}: a thin bar");
+                        assert!(
+                            (f32::from(at.size.width) - BAR).abs() < 0.01,
+                            "{n}: {BAR} pt wide ({at:?})"
+                        );
+                        assert_eq!(
+                            cx.read(|cx| input.read(cx).shot_frames()),
+                            Frames::None,
+                            "{n}: no glow, no breath"
+                        );
+                    }
                     *parts.borrow_mut() = cx.read(|cx| {
                         ws.read(cx)
                             .right_sidebar
