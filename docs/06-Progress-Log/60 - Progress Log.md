@@ -44,6 +44,22 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — Chores 17–23: one mark, the subagents tab, chips on the status row, a tighter plan card
+
+- **Did:** seven chores on master (note 93). 17: one working mark (the folder tab's hides while the status line
+  shows). 18: the corner tab's left step meets the box's line (it was drawn before its tab). 19: subagents in a
+  `🤖 done/all` corner tab whose popover opens each one; the pill row went, a slim `← Main › 🤖 <label>` row inside a
+  subagent. 20: the plan tab ticks off plans whose commits don't say "Task N", by the files each task names. 21:
+  no empty band at the top of an agent tab (the old top bar's 32 pt). 22: the status line is one row, `⧉ N changed`
+  and the checks as chips on its right. 23: no rows painting over each other after a plan is approved (an
+  answered command's lines spilled out of its 22 pt row), and a smaller plan card with a slim pill. One Opus review
+  of 17–22 and a fresh one of 23; their 4 Important findings fixed. Plan:
+  `docs/superpowers/plans/2026-11-26-chores-17-21.md`.
+- **Learned:** an absolutely placed probe with no insets sits at its static position, which moves when its parent
+  stops being a flex column (the plan pill's footer probe). GPUI's `list` re-measures visible rows each frame, so
+  "overlap" there is a row's content overflowing its own box.
+- **Next task:** your on-screen checks (note 93, chores 17–23), then the release you asked for.
+
 ### 2026-11-25 — v0.13.8 released
 
 - **What:** your words: "yes, release it". Version 0.13.8 (`92c3785`), tag `v0.13.8`, Release run 45631368608: test,

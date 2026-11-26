@@ -1544,59 +1544,80 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     - [ ] the Bash row reads "running in the background · M:SS" and stops when the shell ends
     - [ ] a shell that ends while you're on another tab sends one banner (watch for a second one from Claude's wake turn)
     - [ ] a failed shell turns the tab red with ✕ until you open the popover; all done shows green `n/n ✓` until your next message
-- **Chore 17 (queued, not built): one working mark, not two** (your words, 2026-11-26: "the loading is kind of a
-  duplicated, it looks not good" → four options → "go with B, put it in a chore list"). While the chat's status line
-  shows ("◌ Cultivating… · Searching … · 0:17"), the folder tab drops its own status mark (the same arc, right
-  under it); the tab gets its mark back when the status line goes (idle, or "Done" faded). The spinner stays beside
-  the words it describes. Not chosen: A (drop the status line's mark), C (the status line inside the tab), D (an
-  accent bar instead of the status line's spinner).
-- **Chore 18 (queued, not built): the plan tab's left step meets the box's line** (your words, 2026-11-26, with a
-  picture of `☰ 0/5`: "the line is offside"). The concave step on the plan tab's left (chore 4's mirrored sprite,
-  `paint_tab_step_left`, drawn from its square's bottom-right) doesn't join the box's top edge cleanly: its curved
-  line sits off the box's line. Fix by checking the step's anchor (`bounds.right()` / `bounds.bottom()`, its 16 pt
-  box and `mr(-EDGE)`) against the folder tab's step and the box's border, in both themes and at 1x/2x; pin it with
-  a pixel check in `agent-plan-tab` (the edge colour continuous where the curve meets the box's top line).
-- **Chore 19 (queued, not built): subagents move to a corner tab; the top row becomes a way back** (your words,
-  2026-11-26: "Love subagents on the popover list. can we just move there and make it clickable? we remove the one on
-  the top. Or maybe we add 1 more section beside the task and the shell, add icon ':robot #N'" → my take → "queue
-  it"). (1) A third corner tab beside the shells and plan tabs, in their look: a robot icon and done/all
-  subagents (`🤖 4/6`); its popover is the plan popover's "Subagents" list, each row clickable to open that lane,
-  running rows with their arc and current action, a "Needs you" row in red jumping to its question. The plan
-  popover keeps only its tasks. (2) The top lane row shows only while you are inside a subagent's view, slimmed
-  to a breadcrumb: `← Main › 🤖 <label>` and its status; on Main it is gone. ⌥⌘[ / ⌥⌘] still step between
-  lanes.
-- **Chore 20 (queued, not built): the plan tab ticks off chore 16's plan** (seen in your 2026-11-26 picture: "Plan ·
-  0 of 5" for docs/superpowers/plans/2026-11-25-background-shells.md, all five tasks built). Likely its commits'
-  subjects ("Chore 16: …") match neither "Task N" nor the plan's planned commit messages (chore 15). Debug it
-  first: compare the plan's commit lines with the commits on master, and fix the matching (or the plan
-  template), with a test from this real plan.
-- **Chore 21 (queued, not built): no empty band above the subagent row** (your words, 2026-11-26, with a picture:
-  "what's the empty gap?" → "I meant between the subagets tab and the terminal/agent tab" → "queue it"). Under the
-  tab bar, above the lane pills (`✓ Main 🤖 …`), about 70 pt of nothing. Likely space still kept for the agent tab's
-  old top bar (its status/cost/context row moved to the clock in the 2026-11-24 batch), or the lane row's top margin
-  stacked on the chat's top padding. Measure it in a scene, find what reserves it, trim it to the standard gap, and
-  pin the gap with a check (on Main, and with chore 19's slim `← Main › 🤖 …` row inside a subagent).
-- **Chore 22 (queued, not built): the status line's counts become chips on its right** (your words, 2026-11-26,
-  with two pictures: "the changed/checks, it doesnt look good, can you suggest me the best place to place it?" →
-  "what about this case" (a running line with "1 changed" on a second line) → "queue it"). Today "3 changed ·
-  checks pass" sits on its own line under "Done · 3:11", like a loose sentence. Make the status line one row:
-  the left side (mark · word · action · time · +N more) truncates its action with "…" when space runs short;
-  the right side, pinned to the row's right edge so it doesn't move as the action changes, holds quiet chips:
-  `⧉ N changed` (opens the changed files list) and `✓ checks` (opens the check results; a running arc while
-  checks run, red with ✕ when one failed). Chips show as soon as there's something to show (mid-run too), in
-  every state (running, needs you, done). Dimmed like the time. Build after chore 17 (same status line,
-  src/agent_status_line.rs); pin it in a scene for the running and done cases, a narrow width included.
-- **Chore 23 (queued, not built): no overlap after a plan is approved; a smaller, tighter plan card** (your words,
-  2026-11-26, with a picture: "also fix this layout messy overlapping … this is when I accept the plan mode. The
-  plan mode floating buttons, looks very bad and everything too big. redesign it and don't make too much spaces" →
-  my sketch → "yes, build 23 too and release with the rest"). (1) The bug: after you approve a plan, rows paint over
-  each other (an open plan card, its "Show less", "Approved · auto-accept edits ✓", and an "Allowed · Bash …" row
-  whose long multi-line command runs over the rows below). Suspects: the chat list keeping a row's old height after
-  the card changes size, or the long command overflowing its row. Debug first; whatever the cause, a long command
-  shows one line with "…" until opened. (2) The card: the plan text at the chat's own size (not 16 pt), 12 pt
-  padding; one header line `☰ Claude's plan · plan.md ↗ · 7 steps`; folded after 12 lines with "Show all ▾"; the
-  three answers in one row of 24 pt buttons (`Approve · auto-accept ⏎`, `Approve`, `Keep planning`). With the
-  buttons scrolled away, one slim pill on the box's top edge (`☰ Plan waiting · Approve ⏎ · Keep planning`)
-  instead of the big floating bar. Once answered it always folds to one line, even if it was open: `☰ Plan
-  approved · auto-accept edits ✓ … Show plan ›`; opened, it reads only (no footer, Show less at the top only).
-  Pin it in the plan card scenes (waiting, answered, opened-after-answer, a long command row below it).
+- **Chore 17: one working mark, not two** (your words, 2026-11-26: "the loading is kind of a duplicated, it looks
+  not good" → four options → "go with B, put it in a chore list"). **Built:** while the chat's status line shows,
+  the folder tab drops its status mark (`status_line_shown`, shared by the line and the tab); the mark comes back
+  when the line goes (a subagent's view, a restored conversation). Commit `cfcda49`.
+  - [ ] Your check: a working turn shows one spinner (the status line's), none in the folder tab.
+- **Chore 18: the plan tab's left step meets the box's line** (your words, 2026-11-26: "the line is offside").
+  **Cause** (a pixel dump of both steps in `agent-plan-tab`): the folder tab's step is drawn after its tab, so its
+  wedge covers the tab's straight edge; the corner tab's mirrored step was drawn *before* its tab, so the tab's
+  straight left edge ran on down to the box's line beside the curve. **Built:** the step is drawn after the corner
+  tab; a pixel check pins the curve alone meeting the box's line (both themes, 2x; 1x not testable here).
+  Commit `25521df`.
+  - [ ] Your check: the corner tab's left curve meets the box's top line cleanly, both themes.
+- **Chore 19: subagents move to a corner tab; the top row becomes a way back** (your words, 2026-11-26: "Love
+  subagents on the popover list. can we just move there and make it clickable? we remove the one on the top. Or
+  maybe we add 1 more section beside the task and the shell, add icon ':robot #N'" → "queue it"). **Built:** a third
+  corner pill `🤖 1/2` (`agent_subagents.rs`, `agent_subagents_view.rs`): peach while one runs, green `n/n ✓`,
+  red while one needs you. Its popover: "1 of 2 done · 1 running", the ones that need you first, then running
+  (arc and current action), then finished, newest first; ten rows, then it scrolls. A row opens that subagent's
+  view; a "Needs you" row (red) opens it with the keys on its question. The plan popover keeps only its tasks. The
+  pill row and its "+N" list are gone; inside a subagent the header row is the way back:
+  `← Main › 🤖 <label> ◌ kind … time · tokens · Stop`. ⌥⌘[ / ⌥⌘] still step. A corner pill now opens its popover from
+  the press that closed another pill's (it took two clicks). Commit `9bcdd46`.
+  - **Rulings:** the breadcrumb is the header's row, not a second row (the label would show twice); order 🤖 ▣ ☰
+    (the plan stays flush right); a "Needs you" row opens that subagent's view (its question shows in every view);
+    the popover regroups live.
+  - [ ] Your check: subagents show `🤖 n/m` in the corner; its popover opens each one; `← Main` goes back; no
+    pill row on Main; ⌥⌘[ / ⌥⌘] step.
+- **Chore 20: the plan tab ticks off chore 16's plan** (seen in your 2026-11-26 picture: "Plan · 0 of 5").
+  **Cause** (the real plan and `git log`): its commits say "Chore 16: …" (no "Task N"), the plan gives no planned
+  commit messages, its boxes were never ticked; the plan's start was fine. **Built:** a task is done when the
+  commits since the plan touched more than half of the files its section names (`task_files`, `match_files`;
+  `git log --name-only`); a commit counts for a task only if it is newer than the commit an earlier task was done
+  by, or touches a file only this task names (the review: one commit ticked the next tasks too). Chore 16's plan:
+  0 of 5 → 5 of 5 (tests from its text and commits, and a replay of this batch's own plan, commit by commit).
+  Commits `e178869`, `dc848de`.
+  - [ ] Your check: a plan whose commits don't say "Task N" ticks off one task per commit.
+- **Chore 21: no empty band above the subagent row** (your words, 2026-11-26: "what's the empty gap?").
+  **Cause** (measured): the agent tab's old top bar kept its 32 pt after its status and cost moved away, plus the
+  pill row's 5 pt (74 px in a 2x picture). **Built:** the bar keeps only its width probe; Main's first row and a
+  subagent's `← Main` row sit the chat's 16 pt under the tab bar (pinned in `agent-subagents-tab`). Commit `5d7ebd6`.
+  - [ ] Your check: no empty band at the top of an agent tab, on Main and inside a subagent.
+- **Chore 22: the status line's counts become chips on its right** (your words, 2026-11-26: "the changed/checks,
+  it doesnt look good, can you suggest me the best place to place it?" → "queue it"). **Built:** one row: on the
+  left the mark and the line (only its action cut with "…"; the word, time and "+N more" stay), pinned right
+  `⧉ 4 changed` and the checks chip (✓ passing, an arc while a check runs, red ✕ "tests"/"build"/"lint" when one
+  fails, a ring when they ran but not all pass). Each chip opens its part of the ledger popover (files, or checks),
+  hung from the chips; it closes when the chips go (your next message, a subagent's view). The status row lives in
+  `agent_status_view.rs`. Commits `8b52ed1`, `dc848de`.
+  - [ ] Your check: a running turn shows `⧉ N changed` and the checks' arc on the status row's right; each chip
+    opens its list; a narrow pane cuts the action, not the time.
+- **Chore 23: no overlap after a plan is approved; a smaller, tighter plan card** (your words, 2026-11-26: "also
+  fix this layout messy overlapping … The plan mode floating buttons, looks very bad and everything too big.
+  redesign it and don't make too much spaces" → "yes, build 23 too and release with the rest"). **Cause**
+  (reproduced in `agent-plan-long-command`): an answered permission's line was a fixed 22 pt row whose text kept
+  the command's newlines; the 111 pt block spilled up and down over the rows round it (the list's own heights were
+  right). **Built:** the line shows the command's first line with "…" (a long one-liner is cut too); a click opens
+  it whole and the rows below move down. The card: chat-size text, 12 pt in, one header line
+  `☰ Claude's plan · retry-current-endpoint.md ↗ · 4 steps`, folded after 12 lines ("Show all ▾"), the answers in one
+  row of 24 pt buttons (they wrap in a narrow pane), and with them scrolled away a slim pill
+  `☰ Plan waiting · Approve ⏎ · Keep planning` over the box. Answered, it folds to one line even if open
+  (`☰ Plan approved · auto-accept edits ✓ … Show plan ›`); opened again it reads only (Show less at its top).
+  Found on the way: the pill showed with the buttons in view (its footer probe sat under the buttons).
+  Commits `aba2de8`, `f0f5e51`.
+  - **Rulings:** the hint under the buttons went (the box's placeholder says it); no separate 16 pt title line.
+  - [ ] Your check: approve a real plan; no rows overlap; a long command shows one line until clicked; the card
+    and pill look right; the answered plan folds.
+- **Checks for chores 17–23.** Tests 3008 green. No new clippy warnings in the files touched. `cargo fmt --check`
+  clean. Scenes since `5103f17`: 379 passed, 1 failed (`agent-tab-wide`, display-dependent, as on master). New
+  scenes: `agent-subagents-tab`, `-popover`, `-waiting`, `-many`, `agent-plan-long-command`,
+  `agent-plan-waiting-narrow`; removed: `agent-lanes-overflow`, `agent-lanes-list-grouped` (the "+N" list is gone).
+  The visual fingerprints (`tests/ui-shots-ref`) were not refreshed.
+  - **Review** (one whole-change review of 17–22 on Opus, then a fresh one of 23's diff): 17–22 had 3 Important,
+    all fixed (the plan tab ticked tasks early; the ledger popover stayed open unseen, holding the box's keys;
+    the whole status line was cut instead of its action); 23 had 1 Important (the command text could neither cut
+    nor wrap) plus a narrow-pane minor and a long one-liner, fixed. Deferred minors: a "Needs you" row lands on the
+    oldest question when two subagents wait; the breadcrumb's label doesn't shorten in very narrow panes; the
+    subagents and shells popovers share a frame shape not yet one helper; `PlanDraft.title` is now unused.
