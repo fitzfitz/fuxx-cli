@@ -1765,3 +1765,14 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   `file://` page (and local images/CSS beside it); if it can, the shim (and `xdg-open`/`$BROWSER`) also sends a lone
   `.html`/`.htm` path or `file://` address there, as a clicked link would ("Open links in"); PDFs, folders and other
   files still go to macOS untouched. If it can't, say so here and stop. Tests for the shim's cases.
+- **Chore 36 (queued, not built): the files and checks popovers look like the corner ones** (your words,
+  2026-11-26, with two pictures of the status line's `N changed` and `checks` popovers: "I don't like how these 2
+  presented. the fonts the gaps, the sizes on the subagent, shell, tasks popover is cooler." → my take → "cool! love
+  your suggestions"). (1) One popover look for all five (files, checks, subagents, shells, tasks): the corner
+  popovers' frame, fonts, sizes and gaps — a small header line with its count on the right, compact rows, mono only
+  for commands and paths, the same status marks (○ running, ✓, ✕) — as one shared piece (it also settles chore 19's
+  deferred "the subagents and shells popovers repeat one frame shape"). (2) The files list groups each folder once,
+  sorted (the picture showed `src` twice, split by `src/browser`). (3) Files outside the project (an agent's logs in
+  /tmp) don't count toward `N changed`; they show dimmed in an "Outside the project" group at the bottom. (4) The
+  checks rows: one mark per row, no "ran" beside an empty circle. Build after chores 33–35 (same box code); pin it in
+  the ledger and corner popover scenes.
