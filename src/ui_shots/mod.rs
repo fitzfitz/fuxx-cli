@@ -58,6 +58,7 @@ mod agent_long;
 mod agent_notice;
 mod agent_rewind;
 mod agent_shells;
+mod agent_subagents;
 mod args;
 mod ask;
 mod branch;

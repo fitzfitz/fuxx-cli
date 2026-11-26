@@ -25,6 +25,7 @@ mod agent_shells;
 mod agent_status_line;
 mod agent_step_words;
 mod agent_steps;
+mod agent_subagents;
 mod agent_sweep;
 mod agent_tab;
 mod agent_tool_modal;

@@ -106,12 +106,14 @@ impl AgentTab {
                                                 | BoxMenu::Clock
                                                 | BoxMenu::Plan
                                                 | BoxMenu::Shells
+                                                | BoxMenu::Subagents
                                                 | BoxMenu::Mode
                                                 | BoxMenu::Attach
                                                 | BoxMenu::Ledger
                                         )
                                     ) {
                                         this.chip_closed_at = Some(event.position);
+                                        this.chip_closed_menu = this.menu.clone();
                                     }
                                     this.close_menu(cx)
                                 },
@@ -723,7 +725,7 @@ impl AgentTab {
     }
 
     /// The plan's tasks (the 2026-11-24 chores), over the burger tab: each ✓ done (with its
-    /// commit), ◐ being built or ○ next, then each subagent and how it stands.
+    /// commit), ◐ being built or ○ next (the subagents have their own tab since chore 19).
     pub(super) fn plan_popover(
         &self,
         c: &crate::agent_tab::Colors,
@@ -764,30 +766,23 @@ impl AgentTab {
                             .child(SharedString::from(t))
                     }))
             };
-        let tasks = self.plan.iter().map(|t| match &t.state {
-            TaskState::Done { commit } => row(
-                "\u{2713}",
-                c.tool_ok,
-                t.title.clone(),
-                commit.clone(),
-                ui.text,
-            ),
-            TaskState::Building => row("\u{25d0}", c.todo_active, t.title.clone(), None, ui.text),
-            TaskState::Next => row("\u{25cb}", ui.text_dim, t.title.clone(), None, ui.text_dim),
+        // Each probed by its title (the scenes read the popover's rows).
+        let tasks = self.plan.iter().map(|t| {
+            let el = match &t.state {
+                TaskState::Done { commit } => row(
+                    "\u{2713}",
+                    c.tool_ok,
+                    t.title.clone(),
+                    commit.clone(),
+                    ui.text,
+                ),
+                TaskState::Building => {
+                    row("\u{25d0}", c.todo_active, t.title.clone(), None, ui.text)
+                }
+                TaskState::Next => row("\u{25cb}", ui.text_dim, t.title.clone(), None, ui.text_dim),
+            };
+            self.marked_row(t.title.clone(), el)
         });
-        let lanes: Vec<_> = self
-            .conversation
-            .lanes()
-            .iter()
-            .map(|l| {
-                let (mark, ink, word) = if l.status.live() {
-                    ("\u{25d0}", c.todo_active, "working")
-                } else {
-                    ("\u{2713}", c.tool_ok, "done")
-                };
-                row(mark, ink, l.label.clone(), Some(word.to_string()), ui.text)
-            })
-            .collect();
         let heading = |words: String| {
             div()
                 .px(px(8.))
@@ -803,9 +798,6 @@ impl AgentTab {
             .text_size(px(12.5))
             .child(heading(format!("Plan \u{b7} {done} of {all}")))
             .children(tasks)
-            .when(!lanes.is_empty(), |d| {
-                d.child(heading("Subagents".into())).children(lanes)
-            })
             .into_any_element();
         let content = self
             .marked("plan-popover", div().child(content))
@@ -2067,7 +2059,7 @@ impl AgentTab {
     }
 
     /// `el`, and under `ui-shots` a probe that keeps where it was laid out by its `label`.
-    fn marked_row<E: ParentElement>(&self, label: String, el: E) -> E {
+    pub(crate) fn marked_row<E: ParentElement>(&self, label: String, el: E) -> E {
         #[cfg(feature = "ui-shots")]
         {
             let rows = self.menu_rows.clone();

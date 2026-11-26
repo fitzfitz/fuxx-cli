@@ -46,7 +46,7 @@ impl AgentTab {
             crate::icons::Icon::Terminal,
             tab_words(shells),
             ink,
-            matches!(self.menu, Some(BoxMenu::Shells)),
+            BoxMenu::Shells,
             "Background shells",
             |this, _, cx| this.toggle_shells(cx),
             c,

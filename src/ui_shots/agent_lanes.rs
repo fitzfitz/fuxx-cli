@@ -1,4 +1,5 @@
-//! M11ar's scenes: the subagent pill strip, and the chat switched to a subagent.
+//! M11ar's scenes: the chat switched to a subagent (since chore 19 under its slim `← Main ›`
+//! row; the subagents tab's scenes are `agent_subagents`).
 
 use gpui::{Entity, VisualTestAppContext, px};
 use std::time::Duration;
@@ -43,14 +44,6 @@ pub(super) const SCENES: &[Scene] = &[
     Scene {
         name: "agent-lanes-strip",
         run: agent_lanes_strip,
-        themes: Themes::Both,
-        serial: false,
-        kind: Kind::State,
-        sources: SOURCES,
-    },
-    Scene {
-        name: "agent-lanes-overflow",
-        run: agent_lanes_overflow,
         themes: Themes::Both,
         serial: false,
         kind: Kind::State,
@@ -208,14 +201,6 @@ pub(super) const SCENES: &[Scene] = &[
         sources: LANES_CHORE,
     },
     Scene {
-        name: "agent-lanes-list-grouped",
-        run: agent_lanes_list_grouped,
-        themes: Themes::Both,
-        serial: false,
-        kind: Kind::State,
-        sources: LANES_CHORE,
-    },
-    Scene {
         name: "agent-lanes-relay-history",
         run: agent_lanes_relay_history,
         themes: Themes::Both,
@@ -294,9 +279,9 @@ fn started(id: &str, label: &str) -> Vec<Event> {
     ]
 }
 
-/// Claude's two parallel subagents (the recording) with the second still working: the strip
-/// under the top bar in the centred column — Main, then the two in start order — and the chat
-/// switched to the first shows only its steps; back on Main its steps aren't rows.
+/// Claude's two parallel subagents (the recording) with the second still working: no top row
+/// on Main (chore 19); the chat switched to the first shows only its steps under its slim row,
+/// in the centred column; back on Main its steps aren't rows.
 pub(super) fn agent_lanes_strip() {
     scene_sized(
         "agent-lanes-strip",
@@ -325,18 +310,23 @@ pub(super) fn agent_lanes_strip() {
             assert_eq!(lanes[0].2, LaneStatus::Done, "{n}");
             assert_eq!(lanes[1].2, LaneStatus::Working, "{n}");
             let _ = super::frame_fresh(cx, window);
-            let strip = part(cx, tab, n, "strip");
-            assert!(strip.top() > px(0.), "{n}: under the top bar ({strip:?})");
+            // No row of pills on Main (chore 19: the subagents tab lists them).
             assert!(
-                f32::from(strip.size.width) <= crate::ui_tokens::chat::COLUMN_MAX + 1.0,
-                "{n}: in the column"
+                !cx.read(|cx| tab.read(cx).shot_part_now("lane-header")),
+                "{n}: no top row on Main"
             );
-            let centre = f32::from(strip.left() + strip.size.width / 2.0);
-            assert!((centre - 550.0).abs() <= 2.0, "{n}: centred ({centre})");
-            // A lane's view: only its steps.
+            // A lane's view: only its steps, under its slim row in the column, centred.
             let main_rows = cx.read(|cx| tab.read(cx).shot_list().item_count());
             let first = lanes[0].0.clone();
             feed(cx, tab, |t, cx| t.show_view(View::Lane(first.clone()), cx));
+            let _ = super::frame_fresh(cx, window);
+            let row = part(cx, tab, n, "lane-header");
+            assert!(
+                f32::from(row.size.width) <= crate::ui_tokens::chat::COLUMN_MAX + 1.0,
+                "{n}: in the column"
+            );
+            let centre = f32::from(row.left() + row.size.width / 2.0);
+            assert!((centre - 550.0).abs() <= 2.0, "{n}: centred ({centre})");
             let lane_rows = cx.read(|cx| tab.read(cx).shot_list().item_count());
             let steps = cx.read(|cx| tab.read(cx).shot_lane_steps(&first));
             assert_eq!(
@@ -350,33 +340,6 @@ pub(super) fn agent_lanes_strip() {
                 main_rows,
                 "{n}: Main's list as it was"
             );
-        },
-    );
-}
-
-/// Eight subagents in a 720 pt tab: the pills that fit, then "+N"; its list opens.
-pub(super) fn agent_lanes_overflow() {
-    scene_sized(
-        "agent-lanes-overflow",
-        (720.0, 640.0),
-        |n, cx, window, tab| {
-            feed(cx, tab, |t, cx| t.send("Fan out".into(), cx));
-            let events: Vec<Event> = (1..=8)
-                .flat_map(|i| started(&format!("agent{i}"), &format!("Check module {i}")))
-                .collect();
-            feed(cx, tab, |t, cx| t.shot_feed(events, cx));
-            let _ = super::frame_fresh(cx, window);
-            assert_eq!(lanes_of(cx, tab).len(), 8, "{n}");
-            let more = part(cx, tab, n, "more");
-            let strip = part(cx, tab, n, "strip");
-            assert!(
-                more.right() <= strip.right() + px(1.),
-                "{n}: +N in the strip ({more:?} in {strip:?})"
-            );
-            feed(cx, tab, |t, cx| t.shot_toggle_lanes_menu(cx));
-            let _ = super::frame_fresh(cx, window);
-            let menu = part(cx, tab, n, "lanes-menu");
-            assert!(menu.top() >= more.top(), "{n}: the list under +N");
         },
     );
 }
@@ -461,7 +424,6 @@ pub(super) fn agent_lanes_states() {
                 ],
                 "{n}"
             );
-            let _ = part(cx, tab, n, "strip");
             // Main's rows (the subagent row chore): the robot coloured only while live, the
             // waiting row tinted, the words led by a verb.
             let c = colors(cx);
@@ -562,8 +524,7 @@ fn row_group(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) {
 
 /// A subagent's row (the subagent row chore, 2026-11-24): Read, Explore working ("Running Read
 /// · 0:12") and Bash in one group — the robot in `lane_ink` at the mark + 8, the name not in
-/// `tool_name`, the mark column in line with Bash's, the divider from 30 pt, the row 30 tall;
-/// the strip's robot after Main in `lane_ink`.
+/// `tool_name`, the mark column in line with Bash's, the divider from 30 pt, the row 30 tall.
 pub(super) fn agent_lanes_row() {
     scene_sized("agent-lanes-row", (1100.0, 640.0), |n, cx, window, tab| {
         use crate::ui_tokens::chat::{TOOL_DIVIDER_INSET, TOOL_ROW};
@@ -610,12 +571,6 @@ pub(super) fn agent_lanes_row() {
         assert!(
             super::near(line, c.tool_divider) && super::near(before, c.panel),
             "{n}: the divider from 30 pt ({before:?} | {line:?})"
-        );
-        let strip_bot = part(cx, tab, n, "strip-bot");
-        let ink = super::ink_in(&shot, dims, strip_bot, rgb3(c.page));
-        assert!(
-            super::near(ink, c.lane_ink),
-            "{n}: the strip's robot in lane_ink {ink:?}"
         );
         let words = cx.read(|cx| {
             let t = tab.read(cx);
@@ -727,7 +682,7 @@ pub(super) fn agent_lanes_view() {
 const SUB_ASK: &str = include_str!("../providers/fixtures/claude-subagent-ask.jsonl");
 
 /// A subagent asks while you look at another: the card shows in the shown view (Enter answers
-/// it there), headed by who asks; the asking lane's pill is tinted, Main reads "Needs input".
+/// it there), headed by who asks; Main reads "Needs input".
 pub(super) fn agent_lanes_ask() {
     scene_sized("agent-lanes-ask", (1100.0, 640.0), |n, cx, window, tab| {
         feed(cx, tab, |t, cx| {
@@ -753,7 +708,7 @@ pub(super) fn agent_lanes_ask() {
         // from Main, the question (no steps of its own yet).
         assert_eq!(rows, 2, "{n}: the question shows in the other lane's view");
         let _ = super::frame_fresh(cx, window);
-        let _ = part(cx, tab, n, "strip");
+        let _ = part(cx, tab, n, "lane-header");
     });
 }
 
@@ -1426,43 +1381,6 @@ pub(super) fn agent_lanes_finish_mid_draft() {
             );
             let _ = super::frame_fresh(cx, window);
             let _ = part(cx, tab, n, "relay-target");
-        },
-    );
-}
-
-/// The "+N" list with running and finished lanes: grouped, each newest first; "+N" carries a
-/// live mark. A lane finishing while it is open keeps its row.
-pub(super) fn agent_lanes_list_grouped() {
-    scene_sized(
-        "agent-lanes-list-grouped",
-        (720.0, 640.0),
-        |n, cx, window, tab| {
-            still(cx);
-            feed(cx, tab, |t, cx| t.send("Fan out".into(), cx));
-            let mut events: Vec<Event> = (1..=8)
-                .flat_map(|i| started(&format!("agent{i}"), &format!("Check module {i}")))
-                .collect();
-            for i in [1, 2, 4] {
-                events.push(Event::SubagentEnded {
-                    id: format!("agent{i}"),
-                    end: LaneEnd::Done,
-                });
-            }
-            feed(cx, tab, |t, cx| t.shot_feed(events, cx));
-            let _ = super::frame_fresh(cx, window);
-            feed(cx, tab, |t, cx| t.shot_toggle_lanes_menu(cx));
-            // One finishes while it is open: its row stays where it was.
-            feed(cx, tab, |t, cx| {
-                t.shot_feed(
-                    vec![Event::SubagentEnded {
-                        id: "agent3".into(),
-                        end: LaneEnd::Done,
-                    }],
-                    cx,
-                )
-            });
-            let _ = super::frame_fresh(cx, window);
-            let _ = part(cx, tab, n, "lanes-menu");
         },
     );
 }

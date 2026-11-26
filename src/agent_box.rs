@@ -210,6 +210,8 @@ pub enum BoxMenu {
     Plan,
     /// The background shells, over their tab beside the plan tab (chore 16).
     Shells,
+    /// The subagents, over their tab beside the shells tab (chore 19).
+    Subagents,
     Mode,
     Attach,
     /// The turn ledger's popover, over the status pill (the agent activity chore).
@@ -1792,15 +1794,20 @@ impl AgentTab {
     }
 
     /// The tabs at the folder-tab row's right, flush with the box's edge (the folder tab
-    /// mirrored, its step on their left): the shells tab (chore 16) then the plan tab, in one
+    /// mirrored, its step on their left): the subagents tab (chore 19), the shells tab (chore
+    /// 16) and the plan tab, in one
     /// tab, with the popover of either hung from its right edge: the tab with its step, or
     /// nothing without either.
     fn corner_tabs(&self, c: &Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         use crate::card_view::{EDGE, PILL_GAP, TAB_PAD};
-        let pills: Vec<AnyElement> = [self.shells_tab(c, cx), self.plan_tab(c, cx)]
-            .into_iter()
-            .flatten()
-            .collect();
+        let pills: Vec<AnyElement> = [
+            self.subagents_tab(c, cx),
+            self.shells_tab(c, cx),
+            self.plan_tab(c, cx),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         if pills.is_empty() {
             return Vec::new();
         }
@@ -1828,6 +1835,7 @@ impl AgentTab {
         let popover = match self.menu {
             Some(BoxMenu::Plan) => Some(self.plan_popover(c, cx)),
             Some(BoxMenu::Shells) => Some(self.shells_popover(c, cx)),
+            Some(BoxMenu::Subagents) => Some(self.subagents_popover(c, cx)),
             _ => None,
         };
         let shell = self
@@ -1853,9 +1861,10 @@ impl AgentTab {
         ]
     }
 
-    /// One pill of the corner tabs (the plan's `☰ 4/6`, the shells' `▣ 1/3`): `icon` and
-    /// `words` in `ink`, lit while its popover is open, `tip` on hover; a click toggles it (not
-    /// the click that just closed it).
+    /// One pill of the corner tabs (the plan's `☰ 4/6`, the shells' `▣ 1/3`, the subagents'
+    /// `🤖 1/2`): `icon` and `words` in `ink`, lit while its popover (`menu`) is open, `tip` on
+    /// hover; a click toggles it (not the click that just closed it; one that closed another
+    /// pill's popover opens this one's).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn corner_pill(
         &self,
@@ -1864,13 +1873,14 @@ impl AgentTab {
         icon: crate::icons::Icon,
         words: String,
         ink: alacritty_terminal::vte::ansi::Rgb,
-        open: bool,
+        menu: BoxMenu,
         tip: &'static str,
         toggle: fn(&mut Self, &mut Window, &mut Context<Self>),
         c: &Colors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let hover = c.pill_hover;
+        let open = self.menu.as_ref() == Some(&menu);
         self.marked(
             part,
             div()
@@ -1896,7 +1906,8 @@ impl AgentTab {
                         _ => None,
                     };
                     let closed_at = this.chip_closed_at.take();
-                    if pressed.is_none() || closed_at != pressed {
+                    let closed_own = this.chip_closed_menu.take().as_ref() == Some(&menu);
+                    if pressed.is_none() || closed_at != pressed || !closed_own {
                         toggle(this, window, cx);
                     }
                 })),
@@ -1934,14 +1945,13 @@ impl AgentTab {
         } else {
             format!("{done}/{all}")
         };
-        let open = matches!(self.menu, Some(BoxMenu::Plan));
         Some(self.corner_pill(
             "agent-plan-tab",
             "plan-tab",
             crate::icons::Icon::Menu,
             words,
             c.dim,
-            open,
+            BoxMenu::Plan,
             "Plan progress  \u{2325}\u{2318}P",
             |this, window, cx| this.toggle_plan(&crate::agent_tab::TogglePlan, window, cx),
             c,

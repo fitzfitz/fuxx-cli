@@ -1,5 +1,5 @@
-//! Subagent lanes for the agent tab's UI (M11ar): which view is shown, the pills' labels, and
-//! stepping between views. Pure and GPUI-free; the lanes themselves are the conversation's.
+//! Subagent lanes for the agent tab's UI (M11ar): which view is shown, and stepping between
+//! views. Pure and GPUI-free; the lanes themselves are the conversation's.
 
 use crate::agent_conversation::{Lane, LaneStatus};
 use alacritty_terminal::vte::ansi::Rgb;
@@ -12,69 +12,8 @@ pub enum View {
     Lane(String),
 }
 
-/// A pill's label: `label`, cut to `max` characters with an ellipsis.
-pub fn pill_label(label: &str, max: usize) -> String {
-    if label.chars().count() <= max {
-        return label.to_string();
-    }
-    let kept: String = label.chars().take(max.saturating_sub(1)).collect();
-    format!("{}…", kept.trim_end())
-}
-
-/// Every lane's pill label, in order; a label already used gets " 2", " 3" ….
-pub fn pill_labels(lanes: &[Lane], max: usize) -> Vec<String> {
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    lanes
-        .iter()
-        .map(|l| {
-            let n = seen.entry(l.label.clone()).or_insert(0);
-            *n += 1;
-            if *n == 1 {
-                pill_label(&l.label, max)
-            } else {
-                // The number stays when the label is cut (it tells them apart).
-                let suffix = format!(" {n}");
-                let room = max.saturating_sub(suffix.chars().count()).max(2);
-                format!("{}{suffix}", pill_label(&l.label, room))
-            }
-        })
-        .collect()
-}
-
-/// What the kept labels were built for: the lanes' shape and the most characters a label has.
-type LabelsKey = (u64, usize);
-
-/// The strip's labels (`pill_labels`) kept for the lanes' shape (`Conversation::shape`: a lane
-/// started or gone) and the width's cut (the perf chore: built once, not per frame).
-#[derive(Default)]
-pub struct PillLabels {
-    kept: std::cell::RefCell<Option<(LabelsKey, std::rc::Rc<Vec<String>>)>>,
-    builds: std::cell::Cell<usize>,
-}
-
-impl PillLabels {
-    pub fn get(&self, lanes: &[Lane], shape: u64, max: usize) -> std::rc::Rc<Vec<String>> {
-        let mut kept = self.kept.borrow_mut();
-        match &*kept {
-            Some((key, labels)) if *key == (shape, max) => labels.clone(),
-            _ => {
-                self.builds.set(self.builds.get() + 1);
-                let labels = std::rc::Rc::new(pill_labels(lanes, max));
-                *kept = Some(((shape, max), labels.clone()));
-                labels
-            }
-        }
-    }
-
-    /// How many times the labels were built.
-    #[cfg(test)]
-    pub fn builds(&self) -> usize {
-        self.builds.get()
-    }
-}
-
-/// The view `dir` pills from `view` (Main first, then the lanes newest first: `shown_order`;
-/// no wrap). A lane no longer there goes back to Main.
+/// The view `dir` steps from `view` (⌥⌘[ / ⌥⌘]: Main first, then the lanes newest first:
+/// `shown_order`; no wrap). A lane no longer there goes back to Main.
 pub fn step(view: &View, lanes: &[Lane], dir: i32) -> View {
     let order = shown_order(lanes);
     let at = match view {
@@ -89,48 +28,6 @@ pub fn step(view: &View, lanes: &[Lane], dir: i32) -> View {
         0 => View::Main,
         p => View::Lane(lanes[order[p - 1]].id.clone()),
     }
-}
-
-/// The gap between pills, and the "+N" pill's width.
-pub const PILL_GAP: f32 = 8.0;
-pub const MORE_W: f32 = 26.0;
-
-/// Which pills (by index, in order) fit in `avail` with these `widths`, and how many are left
-/// behind "+N". Main (index 0) and the `active` pill always show when anything is hidden.
-#[cfg(test)]
-pub fn fit(widths: &[f32], avail: f32, active: usize) -> (Vec<usize>, usize) {
-    fit_with(widths, avail, active, MORE_W)
-}
-
-/// `fit`, with room for a "+N" pill `more` wide (the lanes chore: it carries a live mark while
-/// a lane runs).
-pub fn fit_with(widths: &[f32], avail: f32, active: usize, more: f32) -> (Vec<usize>, usize) {
-    let n = widths.len();
-    let total: f32 = widths.iter().sum::<f32>() + PILL_GAP * n.saturating_sub(1) as f32;
-    if total <= avail {
-        return ((0..n).collect(), 0);
-    }
-    let room = |shown: &[usize], plus: Option<usize>| {
-        let pills: f32 = shown.iter().chain(plus.iter()).map(|&i| widths[i]).sum();
-        let count = shown.len() + plus.iter().count();
-        pills + PILL_GAP * count as f32 + more <= avail
-    };
-    let mut shown: Vec<usize> = Vec::new();
-    for i in 0..n {
-        if !room(&shown, Some(i)) {
-            break;
-        }
-        shown.push(i);
-    }
-    if active < n && !shown.contains(&active) {
-        while shown.len() > 1 && !room(&shown, Some(active)) {
-            shown.pop();
-        }
-        shown.push(active);
-    }
-    shown.sort_unstable();
-    let hidden = n - shown.len();
-    (shown, hidden)
 }
 
 /// How long a lane has run: to its end, else to `now`; none without a start (a resumed lane).
@@ -334,28 +231,6 @@ pub fn pill_tip(lane: &Lane, time: Option<std::time::Duration>, relays: bool) ->
     .join(" \u{b7} ")
 }
 
-/// The "+N" pill's tooltip: "18 more · 3 running".
-pub fn more_tip(hidden: usize, running: usize) -> String {
-    match running {
-        0 => format!("{hidden} more"),
-        n => format!("{hidden} more \u{b7} {n} running"),
-    }
-}
-
-/// The "+N" list's rows (`hidden`: lane indexes), as two groups — those `running` when it
-/// opened, then the finished — each newest first.
-pub fn list_groups(
-    lanes: &[Lane],
-    hidden: &[usize],
-    running: &std::collections::HashSet<String>,
-) -> (Vec<usize>, Vec<usize>) {
-    let mut newest: Vec<usize> = hidden.to_vec();
-    newest.sort_unstable_by(|a, b| b.cmp(a));
-    newest
-        .into_iter()
-        .partition(|&i| running.contains(&lanes[i].id))
-}
-
 /// Whether a lane's header offers Stop: it is still going and its agent can stop it alone.
 pub fn shows_stop(lane: &Lane) -> bool {
     lane.controls.stop && lane.status.live()
@@ -426,25 +301,6 @@ pub fn lane_row_tip(
     )
 }
 
-/// The strip robot's tooltip: "29 subagents · 3 running · 1 needs input" (no zero parts).
-pub fn strip_tip(lanes: &[Lane]) -> String {
-    let count = |s: LaneStatus| lanes.iter().filter(|l| l.status == s).count();
-    let (running, asking) = (count(LaneStatus::Working), count(LaneStatus::Waiting));
-    let all = match lanes.len() {
-        1 => "1 subagent".to_string(),
-        n => format!("{n} subagents"),
-    };
-    [
-        Some(all),
-        (running > 0).then(|| format!("{running} running")),
-        (asking > 0).then(|| format!("{asking} needs input")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" \u{b7} ")
-}
-
 /// The fewest degrees a lane's ink stands apart from the accent and the status colours.
 pub const LANE_HUE_MIN: f32 = 25.0;
 
@@ -494,7 +350,6 @@ mod tests {
     use super::*;
     use crate::agent_conversation::Lane;
     use crate::providers::LaneControls;
-    use std::rc::Rc;
     use std::time::{Duration, Instant};
 
     fn lane(id: &str, label: &str) -> Lane {
@@ -561,26 +416,6 @@ mod tests {
             pill_tip(&l, None, true),
             "Ended without a report \u{b7} Read the test setup"
         );
-        assert_eq!(more_tip(18, 3), "18 more \u{b7} 3 running");
-        assert_eq!(more_tip(2, 0), "2 more");
-    }
-
-    #[test]
-    fn the_more_list_groups_running_then_finished_newest_first() {
-        let lanes = [
-            lane("a", "A"),
-            lane("b", "B"),
-            lane("c", "C"),
-            lane("d", "D"),
-        ];
-        let running: std::collections::HashSet<String> = ["a".to_string(), "c".to_string()].into();
-        let (live, done) = list_groups(&lanes, &[0, 1, 2, 3], &running);
-        assert_eq!(live, [2, 0], "running, newest first");
-        assert_eq!(done, [3, 1], "finished, newest first");
-        // All running: one group (no headers).
-        let all: std::collections::HashSet<String> = lanes.iter().map(|l| l.id.clone()).collect();
-        let (live, done) = list_groups(&lanes, &[1, 3], &all);
-        assert_eq!((live, done), (vec![3, 1], vec![]));
     }
 
     #[test]
@@ -756,25 +591,6 @@ mod tests {
     }
 
     #[test]
-    fn pills_that_fit_show_the_rest_behind_plus_n() {
-        // Main (60) and three lanes (50 each), 8 apart; "+N" takes 32.
-        let widths = [60.0, 50.0, 50.0, 50.0];
-        assert_eq!(fit(&widths, 400.0, 0), (vec![0, 1, 2, 3], 0), "all fit");
-        let (shown, hidden) = fit(&widths, 210.0, 0);
-        assert_eq!(shown, [0, 1, 2], "as many as fit with room for +N");
-        assert_eq!(hidden, 1);
-        // The active pill is always shown (in place of the last that fit).
-        let (shown, hidden) = fit(&widths, 210.0, 3);
-        assert!(shown.contains(&3) && shown.contains(&0), "{shown:?}");
-        assert_eq!(hidden, 1);
-        assert_eq!(fit(&[], 100.0, 0), (vec![], 0));
-        // A wider "+N" (its live mark: the lanes chore) leaves room for one pill fewer.
-        let (shown, hidden) = fit_with(&widths, 210.0, 0, MORE_W + 17.0);
-        assert_eq!(shown, [0, 1], "{shown:?}");
-        assert_eq!(hidden, 2);
-    }
-
-    #[test]
     fn elapsed_stops_when_the_lane_ends() {
         let t0 = Instant::now();
         let t1 = t0 + Duration::from_secs(62);
@@ -894,49 +710,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pill_label_is_cut_with_an_ellipsis() {
-        assert_eq!(pill_label("Workspace File Reader", 12), "Workspace F…");
-        assert_eq!(pill_label("Reader", 12), "Reader");
-        assert_eq!(pill_label("Reader", 6), "Reader", "exactly the limit");
-    }
-
-    #[test]
-    fn repeated_labels_are_numbered() {
-        let lanes = [
-            lane("a", "Reader"),
-            lane("b", "Reader"),
-            lane("c", "Tester"),
-        ];
-        assert_eq!(pill_labels(&lanes, 20), ["Reader", "Reader 2", "Tester"]);
-        // Cut short, the number stays (it tells them apart).
-        let long = [
-            lane("a", "Workspace File Reader"),
-            lane("b", "Workspace File Reader"),
-        ];
-        assert_eq!(pill_labels(&long, 12), ["Workspace F…", "Workspace… 2"]);
-    }
-
-    /// The perf chore: the strip's labels are built once per lanes' shape and width, not per
-    /// frame.
-    #[test]
-    fn the_pill_labels_are_built_once_per_shape_and_width() {
-        let lanes = [lane("a", "Reader"), lane("b", "Reader")];
-        let cache = PillLabels::default();
-        let first = cache.get(&lanes, 1, 20);
-        assert_eq!(*first, ["Reader", "Reader 2"]);
-        assert!(Rc::ptr_eq(&first, &cache.get(&lanes, 1, 20)), "kept");
-        assert_eq!(cache.builds(), 1);
-        let more = [
-            lane("a", "Reader"),
-            lane("b", "Reader"),
-            lane("c", "Tester"),
-        ];
-        assert_eq!(*cache.get(&more, 2, 20), ["Reader", "Reader 2", "Tester"]);
-        assert_eq!(*cache.get(&more, 2, 12), ["Reader", "Reader 2", "Tester"]);
-        assert_eq!(cache.builds(), 3, "a new shape, a new width");
-    }
-
-    #[test]
     fn stepping_goes_through_main_then_the_lanes() {
         // Pills newest first after Main (your words, 2026-11-22: "make sure it sorts by
         // newest"): `b` started after `a`.
@@ -1047,23 +820,6 @@ mod tests {
                 "{generic:?}"
             );
         }
-    }
-
-    /// The strip robot's tooltip: how many, how many run, how many need you; no zero parts.
-    #[test]
-    fn the_strip_robot_counts_the_subagents() {
-        let mut lanes: Vec<Lane> = (0..29).map(|i| lane(&format!("l{i}"), "A")).collect();
-        for l in lanes.iter_mut().skip(4) {
-            l.status = LaneStatus::Done;
-        }
-        lanes[3].status = LaneStatus::Waiting;
-        assert_eq!(
-            strip_tip(&lanes),
-            "29 subagents \u{b7} 3 running \u{b7} 1 needs input"
-        );
-        assert_eq!(strip_tip(&lanes[4..6]), "2 subagents", "all finished");
-        assert_eq!(strip_tip(&lanes[..1]), "1 subagent \u{b7} 1 running");
-        assert_eq!(strip_tip(&lanes[3..4]), "1 subagent \u{b7} 1 needs input");
     }
 
     fn rgb(v: u32) -> Rgb {

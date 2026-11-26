@@ -77,8 +77,8 @@ pub enum Icon {
     Paperclip,
     /// Fork from one of your messages into a new tab (batch 3, chore 2).
     Fork,
-    /// A subagent (the subagent row chore, 2026-11-24): its row, the pill strip's group, its
-    /// lane's header.
+    /// A subagent (the subagent row chore, 2026-11-24): its row, its lane's row, and the
+    /// subagents tab (chore 19).
     Bot,
     /// The status marks' own glyphs (the scroll-lag chore, 2026-11-25: drawn as SVG sprites, not
     /// paths, which cost the GPU a whole-window pass each), not Lucide's: Working's arc (a

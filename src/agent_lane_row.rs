@@ -1,8 +1,8 @@
 //! A subagent's row in the chat (the subagent row chore, 2026-11-24, the Lead UI/UX
 //! Designer's spec; your words: "Make it different if its a subagent so that I knew its a
 //! subagent running"): the state's mark, an outlined robot (`Icon::Bot`), its name, its task and
-//! what it is doing, in the tool group's shell (`tool_shell`). The robot also heads the pill
-//! strip's subagents and a lane's header (`robot`).
+//! what it is doing, in the tool group's shell (`tool_shell`). The robot also sits in a lane's
+//! row (`robot`).
 
 use super::*;
 use crate::agent_conversation::{Lane, LaneStatus};

@@ -75,6 +75,9 @@ mod plan_card;
 
 #[path = "agent_shells_view.rs"]
 mod shells_view;
+
+#[path = "agent_subagents_view.rs"]
+mod subagents_view;
 #[cfg(feature = "ui-shots")]
 pub(crate) use ask_view::ShotAsk;
 #[cfg(feature = "ui-shots")]
@@ -1455,11 +1458,8 @@ pub struct AgentTab {
     pump: Option<Task<()>>,
     /// The subagent transcripts being followed, by lane (M11ar; dropped with the process).
     followers: HashMap<String, Task<()>>,
-    /// Each live lane's mark (the Working arc, or Waiting), and Main's pill's.
+    /// Each live lane's mark (the Working arc, or Waiting).
     lane_marks: HashMap<String, Entity<MarkView>>,
-    /// The pill strip's labels, kept until a lane starts or goes (the perf chore).
-    pill_labels: crate::agent_lanes::PillLabels,
-    main_mark: Option<Entity<MarkView>>,
     /// When each lane was first seen and when it ended (its elapsed time stops there); since
     /// the lanes chore, its current run's (a resume starts it again).
     lane_times: HashMap<String, (Instant, Option<Instant>)>,
@@ -1479,10 +1479,6 @@ pub struct AgentTab {
     pub(crate) bar_changed_at: Option<Instant>,
     /// The box was the closing bar at the last look (`note_bar`).
     bar_was: bool,
-    /// The "+N" list's running lanes when it opened (it regroups only on the next open).
-    lanes_menu_running: HashSet<String>,
-    /// The "+N" list of the pills that don't fit, open.
-    lanes_menu: bool,
     end: ProcessEnd,
     /// The process has ended (a send starts a new one).
     exited: bool,
@@ -1650,6 +1646,9 @@ pub struct AgentTab {
     /// Where the press was that last closed the folder or model menu from outside it: that
     /// chip's click from the same press leaves it closed (not closed and opened again).
     pub(crate) chip_closed_at: Option<gpui::Point<gpui::Pixels>>,
+    /// The menu that press closed (chore 19: a corner pill opens its own popover from a press
+    /// that closed another's).
+    pub(crate) chip_closed_menu: Option<BoxMenu>,
     /// The usage gauge's panel opens on a rest over it (the 2026-11-24 chores: hover, not click).
     pub(crate) usage_hover: crate::hover_delay::HoverDelay,
     /// The clock's cost and context panel opens the same way.
@@ -2314,7 +2313,6 @@ impl AgentTab {
             pump: None,
             followers: HashMap::new(),
             lane_marks: HashMap::new(),
-            pill_labels: Default::default(),
             lane_runs: HashMap::new(),
             lane_flash: HashMap::new(),
             bar_open: None,
@@ -2323,10 +2321,7 @@ impl AgentTab {
             bar_changes: 0,
             bar_changed_at: None,
             bar_was: false,
-            lanes_menu_running: HashSet::new(),
-            main_mark: None,
             lane_times: HashMap::new(),
-            lanes_menu: false,
             end: ProcessEnd::default(),
             exited: false,
             booting: false,
@@ -2409,6 +2404,7 @@ impl AgentTab {
             menu: None,
             picker: None,
             chip_closed_at: None,
+            chip_closed_menu: None,
             usage_hover: Default::default(),
             clock_hover: Default::default(),
             plan: Vec::new(),
@@ -6814,7 +6810,6 @@ impl Render for AgentTab {
             })
             .text_color(hsla(c.text))
             .child(self.top_line())
-            .children(self.lane_strip(&look, cx))
             .children(self.lane_header(&look, cx))
             .child(
                 if crate::agent_top::animating(
