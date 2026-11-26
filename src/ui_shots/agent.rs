@@ -2638,17 +2638,23 @@ pub(super) fn agent_tab_review() {
             )
         });
         let _ = frame_fresh(cx, window);
-        // The row starts under the top bar (32) and its 14 pt gap: a click on it opens the
-        // tool's detail in the modal (spec A §B), not inline.
-        cx.simulate_click(window, point(px(300.), px(60.)), Modifiers::none());
+        // A click on the row (where its mark was drawn) opens the tool's detail in the modal
+        // (spec A §B), not inline.
+        let mark = cx
+            .read(|cx| tab.read(cx).shot_part("tool-mark"))
+            .unwrap_or_else(|| panic!("{n}: the row's mark"));
+        cx.simulate_click(window, point(px(300.), mark.center().y), Modifiers::none());
         cx.run_until_parked();
         assert!(
             cx.read(|cx| tab.read(cx).shot_open("e1")),
             "{n}: the row's click opens the modal"
         );
         let _ = frame_fresh(cx, window);
-        // In the panel (its header at 48–92, the diff below): it stays open.
-        cx.simulate_click(window, point(px(DIMS.0 / 2.), px(130.)), Modifiers::none());
+        // In the panel: it stays open.
+        let modal = cx
+            .read(|cx| tab.read(cx).shot_part("modal"))
+            .unwrap_or_else(|| panic!("{n}: the modal"));
+        cx.simulate_click(window, modal.center(), Modifiers::none());
         cx.run_until_parked();
         assert!(
             cx.read(|cx| tab.read(cx).shot_open("e1")),

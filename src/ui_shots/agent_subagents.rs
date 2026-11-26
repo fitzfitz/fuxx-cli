@@ -94,8 +94,8 @@ fn view(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> View {
 }
 
 /// The tab: `🤖 1/2` in the corner tab, left of the plan's `☰`, on the folder tab's row; on
-/// Main no top row (no pills, no breadcrumb). ⌥⌘] steps into the newest subagent: the slim row
-/// `← Main › 🤖 <label>` shows (and the folder tab's status mark is back: no status line in a
+/// Main no top row (no pills, no breadcrumb), the chat 16 pt down (chore 21). ⌥⌘] steps into the newest subagent: the slim row
+/// `← Main › 🤖 <label>` shows 16 pt down (and the folder tab's status mark is back: no status line in a
 /// subagent's view, chore 17); `← Main` goes back; ⌥⌘[ from the newest steps to Main.
 pub(super) fn agent_subagents_tab() {
     shoot("agent-subagents-tab", DIMS, |n, cx, window, tab, _| {
@@ -120,6 +120,15 @@ pub(super) fn agent_subagents_tab() {
         );
         assert!(!drawn(cx, tab, "strip"), "{n}: no pill row on Main");
         assert!(!drawn(cx, tab, "lane-header"), "{n}: no breadcrumb on Main");
+        // No empty band at the top (chore 21): Main's first row starts the chat's standard gap
+        // under the tab's top (the top bar's empty 32 pt is gone).
+        let gap = crate::ui_tokens::chat::FIRST_TOP;
+        let first = part(cx, tab, n, "you-bubble");
+        assert!(
+            f32::from(first.top()) <= gap + 1.0,
+            "{n}: Main's first row {gap} pt down, not {:?}",
+            first.top()
+        );
         cx.simulate_keystrokes(window, "alt-cmd-]");
         cx.run_until_parked();
         assert_eq!(
@@ -134,6 +143,11 @@ pub(super) fn agent_subagents_tab() {
         assert!(
             back.left() <= header.left() + px(1.),
             "{n}: ← Main leads the row"
+        );
+        assert!(
+            (f32::from(header.top()) - gap).abs() <= 1.0,
+            "{n}: the slim row {gap} pt down, not {:?}",
+            header.top()
         );
         assert!(
             drawn(cx, tab, "status"),

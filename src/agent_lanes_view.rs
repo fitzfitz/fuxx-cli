@@ -950,6 +950,8 @@ impl AgentTab {
                 .flex_none()
                 .w_full()
                 .px(px(AREA_X))
+                // The chat's first gap under the tab bar, as Main's first row (chore 21).
+                .pt(px(crate::ui_tokens::chat::FIRST_TOP))
                 .pb(px(4.))
                 .flex()
                 .justify_center()

@@ -1098,9 +1098,6 @@ pub struct Colors {
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
-/// The top bar's height (spec A §C); the tool modal's scrim starts under it.
-const TOP_BAR: f32 = 32.0;
-
 /// The status marks' size in the tab (the top bar's pill, the tool modal's header).
 const MARK: f32 = 12.0;
 
@@ -5390,7 +5387,7 @@ impl AgentTab {
                 .key_context("AgentImageView")
                 .track_focus(&self.modal_focus)
                 .absolute()
-                .top(px(TOP_BAR))
+                .top_0()
                 .left_0()
                 .right_0()
                 .bottom_0()
@@ -5770,7 +5767,7 @@ impl AgentTab {
             .key_context("AgentToolModal")
             .track_focus(&self.modal_focus)
             .absolute()
-            .top(px(TOP_BAR))
+            .top_0()
             .left_0()
             .right_0()
             .bottom_0()
@@ -6242,20 +6239,14 @@ impl AgentTab {
         )
         .absolute()
         .size_full();
+        // Its status moved to the box's tab (2026-11-22), its cost and context behind the box's
+        // clock (the 2026-11-24 chores): only its width probe is left, no height (chore 21: its
+        // empty 32 pt stood over the chat as a band; the chat's own first gap is the margin).
         div()
             .relative()
             .flex_none()
             .w_full()
-            .h(px(TOP_BAR))
-            .px(px(AREA_X))
-            .flex()
-            .items_center()
-            .text_size(px(text::META))
-            .font_features(crate::sidebar::tabular())
             .child(measure)
-            // Its status moved to the box's tab (2026-11-22), its cost and context behind the
-            // box's clock (the 2026-11-24 chores): the bar is the chat's top margin now, and
-            // measures the tab's width.
             .into_any_element()
     }
 
