@@ -47,10 +47,12 @@ pub struct FileRow {
     pub minus: Option<u32>,
 }
 
-/// The popover's files (chore 36): every file the turn touched, under its folder.
+/// The popover's files (chore 36): every file the turn touched, under its folder; those in the
+/// tab's folder (the project) apart from those outside it (an agent's logs in /tmp).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FilesList {
     pub inside: Vec<Group>,
+    pub outside: Vec<Group>,
 }
 
 /// The rows under one folder (relative to the tab's folder; `""`: its top).
@@ -173,7 +175,8 @@ fn line_count(path: &Path) -> Option<u32> {
 
 /// The files `ledger`'s turn touched, as rows under their folders (each folder once, the top's
 /// first, then case-blind; files by name): those it changed, those scripts touched and those it
-/// only read, all in one grouping (chore 36: grouped apart, a folder came back once per kind).
+/// only read, all in one grouping (chore 36: grouped apart, a folder came back once per kind);
+/// those outside `cwd` apart, under their full folder.
 pub fn files_list(ledger: &Ledger, facts: &HashMap<PathBuf, FileFacts>, cwd: &Path) -> FilesList {
     let (scripted, read) = (
         kept_paths(&ledger.scripted, facts),
@@ -182,8 +185,11 @@ pub fn files_list(ledger: &Ledger, facts: &HashMap<PathBuf, FileFacts>, cwd: &Pa
     let rows = changed_rows(&ledger.changed, facts)
         .chain(plain_rows(&scripted, facts, How::Script))
         .chain(plain_rows(&read, facts, How::Read));
+    let (inside, outside): (Vec<FileRow>, Vec<FileRow>) =
+        rows.partition(|r| r.path.starts_with(cwd));
     FilesList {
-        inside: grouped(rows, cwd),
+        inside: grouped(inside.into_iter(), cwd),
+        outside: grouped(outside.into_iter(), cwd),
     }
 }
 
@@ -608,5 +614,30 @@ mod tests {
         let list = files_list(&l, &HashMap::new(), Path::new(CWD));
         let folders: Vec<&str> = list.inside.iter().map(|g| g.folder.as_str()).collect();
         assert_eq!(folders, ["", "assets", "Docs"]);
+    }
+
+    /// Chore 36: files outside the tab's folder (an agent's log in /tmp, a sibling folder whose
+    /// name starts the same) go apart, by their full folder, and aren't counted as changed.
+    #[test]
+    fn files_outside_the_project_go_apart() {
+        let mut l = ledger(&["src/api.rs"], &[], &[]);
+        for path in ["/tmp/fx/logs/run.log", "/w-old/x.rs"] {
+            l.changed.push(Changed {
+                path: path.into(),
+                plus: Some(3),
+                minus: None,
+            });
+        }
+        let list = files_list(&l, &HashMap::new(), Path::new(CWD));
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(names(&list.inside), [("src".into(), s(&["api.rs"]))]);
+        assert_eq!(
+            names(&list.outside),
+            [
+                ("/tmp/fx/logs".into(), s(&["run.log"])),
+                ("/w-old".into(), s(&["x.rs"])),
+            ]
+        );
+        assert_eq!(total(&list.inside).0, 1);
     }
 }

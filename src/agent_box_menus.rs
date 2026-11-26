@@ -732,10 +732,9 @@ impl AgentTab {
             Some(BoxMenu::Subagents) => self.conversation.lanes().is_empty(),
             Some(BoxMenu::Ledger) => {
                 !self.status_line_shown()
-                    || self
-                        .ledger
-                        .as_ref()
-                        .is_none_or(|l| crate::agent_status_line::chips(l).is_empty())
+                    || self.ledger.as_ref().is_none_or(|l| {
+                        crate::agent_status_line::chips(l, &self.start.cwd).is_empty()
+                    })
             }
             _ => false,
         };

@@ -81,15 +81,16 @@ impl AgentTab {
             out.push(popover::header("Changed files", Some(count), &ui).into_any_element());
         }
         let mut n = 0;
-        self.file_groups(None, list.inside, "ledger-files", &mut n, out, cx);
+        self.file_groups(false, list.inside, &mut n, out, cx);
+        self.file_groups(true, list.outside, &mut n, out, cx);
     }
 
-    /// `groups` under `title`: each folder's row (a click folds it), then its files.
+    /// `groups`: each folder's row (a click folds it), then its files; those `outside` the
+    /// project under "Outside the project", dimmed (chore 36).
     fn file_groups(
         &self,
-        title: Option<&str>,
+        outside: bool,
         groups: Vec<Group>,
-        id: &'static str,
         n: &mut usize,
         out: &mut Vec<AnyElement>,
         cx: &mut Context<Self>,
@@ -97,10 +98,15 @@ impl AgentTab {
         if groups.is_empty() {
             return;
         }
+        let id = if outside {
+            "ledger-outside"
+        } else {
+            "ledger-files"
+        };
         let ui = cx.global::<Appearance>().theme.ui();
         let mono = cx.global::<Appearance>().font.family.clone();
-        if let Some(title) = title {
-            out.push(popover::header(title, None, &ui).into_any_element());
+        if outside {
+            out.push(popover::header("Outside the project", None, &ui).into_any_element());
         }
         for group in groups {
             let folded = self.ledger_folded.contains(&group.folder);
@@ -123,11 +129,11 @@ impl AgentTab {
                             px(12.),
                             hsla(ui.text_dim),
                         )))
-                        .child(popover::mono(
-                            group.folder.clone(),
-                            ui.text_dim,
-                            mono.clone(),
-                        ))
+                        // A long folder (one outside) keeps its end.
+                        .child(
+                            popover::mono(group.folder.clone(), ui.text_dim, mono.clone())
+                                .text_ellipsis_start(),
+                        )
                         .child(popover::tail(group.rows.len().to_string(), ui.text_faint))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if !this.ledger_folded.remove(&key) {
@@ -144,18 +150,19 @@ impl AgentTab {
             let nested = !group.folder.is_empty();
             for file in group.rows {
                 *n += 1;
-                out.push(self.file_row(file, nested, (id, *n), cx));
+                out.push(self.file_row(file, nested, outside, (id, *n), cx));
             }
         }
     }
 
     /// One file's row: its A/M/D mark, its name and its +/− (one a script touched says
     /// "script", one only read "read", dim); a click opens its diff tab (⌥: the file; a file
-    /// only read has no diff, so the file).
+    /// only read has no diff, so the file). One `outside` the project is dim and opens the file.
     fn file_row(
         &self,
         file: crate::changed_files::FileRow,
         nested: bool,
+        outside: bool,
         id: (&'static str, usize),
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -168,23 +175,30 @@ impl AgentTab {
             FileStatus::Deleted => ("D", c.failed),
             FileStatus::Unchanged => ("", ui.text_dim),
         };
-        let unchanged = file.status == FileStatus::Unchanged;
+        let unchanged = outside || file.status == FileStatus::Unchanged;
+        // Outside the project: every part in the dim ink.
+        let ink = if outside { ui.text_dim } else { ink };
+        let (plus_ink, minus_ink) = if outside {
+            (ui.text_dim, ui.text_dim)
+        } else {
+            (c.tool_ok, c.failed)
+        };
         let counts = div()
             .flex_none()
             .flex()
             .gap(px(6.))
             .when_some(file.plus.filter(|p| *p > 0), |d, p| {
-                d.child(popover::tail(format!("+{p}"), c.tool_ok))
+                d.child(popover::tail(format!("+{p}"), plus_ink))
             })
             .when_some(file.minus.filter(|m| *m > 0), |d, m| {
-                d.child(popover::tail(format!("\u{2212}{m}"), c.failed))
+                d.child(popover::tail(format!("\u{2212}{m}"), minus_ink))
             })
             .map(|d| match file.how {
                 How::Changed => d,
                 How::Script => d.child(popover::tail("script", ui.text_dim)),
                 How::Read => d.child(popover::tail("read", ui.text_dim)),
             });
-        let name_ink = if file.how == How::Read {
+        let name_ink = if outside || file.how == How::Read {
             ui.text_dim
         } else {
             ui.text

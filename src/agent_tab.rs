@@ -6053,7 +6053,12 @@ impl AgentTab {
             took: self.top.took,
             now: Instant::now(),
         });
-        Some((main, self.ledger.as_ref().map(chips).unwrap_or_default()))
+        let chips = self
+            .ledger
+            .as_ref()
+            .map(|l| chips(l, &self.start.cwd))
+            .unwrap_or_default();
+        Some((main, chips))
     }
 
     /// Whether the chat shows the running mark (chore 31): Main's status line, or a live

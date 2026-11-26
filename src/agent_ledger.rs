@@ -85,6 +85,17 @@ pub struct Ledger {
     pub checking: bool,
 }
 
+impl Ledger {
+    /// How many files the turn changed under `root`, the tab's folder (chore 36: an agent's log
+    /// in /tmp isn't the project's).
+    pub fn changed_in(&self, root: &Path) -> usize {
+        self.changed
+            .iter()
+            .filter(|c| c.path.starts_with(root))
+            .count()
+    }
+}
+
 /// Between the parts (and after the status word).
 pub const SEP: &str = " · ";
 
@@ -676,7 +687,7 @@ mod tests {
         let l = main_of(&c);
         assert_eq!(l.failing, Some(CheckWhat::Build));
         assert_eq!(
-            crate::agent_status_line::chips(&l)
+            crate::agent_status_line::chips(&l, Path::new(CWD))
                 .last()
                 .map(|c| c.text.as_str()),
             Some("build")

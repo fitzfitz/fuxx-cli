@@ -131,16 +131,18 @@ pub struct Chip {
     pub text: String,
 }
 
-/// The status row's chips (chore 22): `N changed` once a file changed; the checks once one ran
-/// or runs — running (the arc) while one runs, failing (red, what fails), passing, or ran.
-pub fn chips(ledger: &Ledger) -> Vec<Chip> {
+/// The status row's chips (chore 22): `N changed` once a file under `root` (the tab's folder)
+/// changed (chore 36: those outside it aren't counted); the checks once one ran or runs —
+/// running (the arc) while one runs, failing (red, what fails), passing, or ran.
+pub fn chips(ledger: &Ledger, root: &std::path::Path) -> Vec<Chip> {
     use crate::agent_activity::CheckWhat;
     let mut out = Vec::new();
-    if !ledger.changed.is_empty() {
+    let changed = ledger.changed_in(root);
+    if changed > 0 {
         out.push(Chip {
             kind: ChipKind::Changed,
             state: ChipState::Quiet,
-            text: format!("{} changed", ledger.changed.len()),
+            text: format!("{changed} changed"),
         });
     }
     let checks = |state, text: &str| Chip {
@@ -365,6 +367,32 @@ mod tests {
         }
     }
 
+    const ROOT: &str = "/tmp/fx/code/my-app";
+
+    fn chips_in(ledger: &Ledger) -> Vec<Chip> {
+        chips(ledger, std::path::Path::new(ROOT))
+    }
+
+    /// Chore 36: a file outside the tab's folder (an agent's log in /tmp) isn't counted; with
+    /// only such files changed there is no changed chip.
+    #[test]
+    fn files_outside_the_project_are_not_counted() {
+        let outside = |path: &str| crate::agent_ledger::Changed {
+            path: path.into(),
+            plus: None,
+            minus: None,
+        };
+        let mut l = ledger(1, &[], false);
+        l.changed.push(outside("/tmp/fx/logs/run.log"));
+        l.changed.push(outside("/tmp/fx/code/my-app-old/x.rs"));
+        assert_eq!(
+            chips_in(&l),
+            [chip(ChipKind::Changed, ChipState::Quiet, "1 changed")]
+        );
+        l.changed.remove(0);
+        assert!(chips_in(&l).is_empty(), "only outside: {:?}", chips_in(&l));
+    }
+
     fn chip(kind: ChipKind, state: ChipState, text: &str) -> Chip {
         Chip {
             kind,
@@ -378,31 +406,31 @@ mod tests {
     fn chips_say_changed_and_how_the_checks_stand() {
         let passed = Outcome::Passed { n: Some(2) };
         assert_eq!(
-            chips(&ledger(4, std::slice::from_ref(&passed), false)),
+            chips_in(&ledger(4, std::slice::from_ref(&passed), false)),
             [
                 chip(ChipKind::Changed, ChipState::Quiet, "4 changed"),
                 chip(ChipKind::Checks, ChipState::Passed, "checks"),
             ]
         );
-        assert!(chips(&ledger(0, &[], false)).is_empty(), "nothing yet");
+        assert!(chips_in(&ledger(0, &[], false)).is_empty(), "nothing yet");
         assert_eq!(
-            chips(&ledger(0, &[], true)),
+            chips_in(&ledger(0, &[], true)),
             [chip(ChipKind::Checks, ChipState::Running, "checks")],
             "a check running, none finished yet"
         );
         assert_eq!(
-            chips(&ledger(1, std::slice::from_ref(&passed), true))[1],
+            chips_in(&ledger(1, std::slice::from_ref(&passed), true))[1],
             chip(ChipKind::Checks, ChipState::Running, "checks"),
             "running again"
         );
         assert_eq!(
-            chips(&ledger(0, &[Outcome::Unknown], false)),
+            chips_in(&ledger(0, &[Outcome::Unknown], false)),
             [chip(ChipKind::Checks, ChipState::Ran, "checks")]
         );
         let mut failing = ledger(0, &[Outcome::Unknown], false);
         failing.failing = Some(CheckWhat::Build);
         assert_eq!(
-            chips(&failing),
+            chips_in(&failing),
             [chip(ChipKind::Checks, ChipState::Failed, "build")]
         );
     }
