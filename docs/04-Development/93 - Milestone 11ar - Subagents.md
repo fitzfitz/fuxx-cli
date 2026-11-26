@@ -1659,3 +1659,10 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   commit box, search fields, settings fields, rename, the agent box) gets the same small inner padding from one
   shared token, so text and caret never touch the border. Search for the input components first and set it in one
   place; pin it in the scenes that show inputs.
+- **Chore 30 (queued, not built): chevrons, not arrow glyphs, in the confirmation cards** (your words, 2026-11-26:
+  "for all popup confirmation, can you make all the arrows to be chevron?"). The cards that wait for you (the
+  permission card, the plan card, the question card, and card_view's folds) draw their fold and open arrows as text
+  glyphs (`Show all ▾`, `Show less ▴`, `Show plan ›`, card_view's `▾ Show less`). Make every one a Lucide chevron
+  icon (ChevronDown / ChevronRight from src/icons.rs; add Lucide's chevron-up for "Show less"), the same size and
+  colour as the link's text, and the same in chores 25 and 23's new rows. Keyboard legends (`← →`) and the `→` in
+  the answer text sent to the agent stay as they are. Pin one fold link per card in its scene.
