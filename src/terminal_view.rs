@@ -573,6 +573,17 @@ impl TerminalView {
         (cards.pills_at, cards.composer.map(|(x, y, _)| (x, y)))
     }
 
+    /// The cards' fold rows in view, (x, y, width, height) (chore 30).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_card_folds(&self) -> Vec<(f32, f32, f32, f32)> {
+        self.cards
+            .borrow()
+            .hits
+            .iter()
+            .filter_map(|h| h.fold)
+            .collect()
+    }
+
     #[cfg(feature = "ui-shots")]
     pub fn shot_card_count(&self) -> usize {
         self.cards.borrow().hits.len()

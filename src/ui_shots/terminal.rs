@@ -1636,6 +1636,28 @@ fn shell_cards_scene() {
         // Rework: the composer's two boxes.
         assert!(any(ui.composer_outer), "{n}: the composer's outer box");
         assert!(any(ui.composer_inner), "{n}: the composer's inner box");
+        // Chore 30: scrolled up to the echo card's fold row, its chevron is drawn (an icon
+        // before the words, where the ▸ glyph was): ink in the square at the row's left, and a
+        // gap after it before the words.
+        let view = rig.view.clone();
+        rig.cx
+            .update(|cx| view.update(cx, |v, _| v.shot_scroll_cards(10_000.0)));
+        let shot = rig.frame();
+        let folds = rig.read(|v| v.shot_card_folds());
+        let &(x, y, _, h) = folds
+            .first()
+            .unwrap_or_else(|| panic!("{n}: a fold row in view"));
+        let bg = pixel_at(&shot, dims, x + 30.0, y + 1.0);
+        let side = crate::ui_tokens::text::META;
+        let top = y + (h - side) / 2.0;
+        let inked = (0..(side as usize))
+            .flat_map(|dy| (0..(side as usize)).map(move |dx| (dx, dy)))
+            .any(|(dx, dy)| {
+                let p = pixel_at(&shot, dims, x + dx as f32, top + dy as f32);
+                p.iter().zip(bg).any(|(a, b)| a.abs_diff(b) > 40)
+            });
+        assert!(inked, "{n}: the fold row's chevron is drawn");
+        save_shot("shell-cards-fold", slug, &shot);
     }
 }
 
