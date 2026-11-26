@@ -213,7 +213,17 @@ mod tests {
         let folder = claimed.0.clone();
         release(Some(claimed));
         assert!(!folder.exists(), "removed when let go");
-        let again = claim(&shots, "scene").expect("free again");
+        // Free again, though not always at once: a child another test is spawning (a pty, a
+        // `pre_exec` command) holds a copy of every open file, this lock's too, until it execs,
+        // and the lock stays held by that copy (a flaky CI failure, 2026-11-25 and -26).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let again = loop {
+            if let Some(again) = claim(&shots, "scene") {
+                break again;
+            }
+            assert!(std::time::Instant::now() < deadline, "free again");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         release(Some(again));
     }
 
