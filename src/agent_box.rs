@@ -1108,13 +1108,16 @@ impl AgentTab {
             });
         // The agent's status before the folder, as a shell's running command (`status_pill`).
         let theme = cx.global::<Appearance>().theme;
-        // Its turn ledger's popover hangs over it (the agent activity chore).
-        let status = self.status_pill(&theme, c, cx).map(|el| {
+        // Its turn ledger's popover hangs over it (the agent activity chore), and still hangs
+        // there while the status line has the mark (chore 17).
+        let ledger_open = menu_on(|m| matches!(m, BoxMenu::Ledger));
+        let mark = self.status_pill(&theme, c, cx);
+        let status = (mark.is_some() || ledger_open).then(|| {
             div()
                 .relative()
                 .flex_none()
-                .child(el)
-                .when(menu_on(|m| matches!(m, BoxMenu::Ledger)), |d| {
+                .children(mark)
+                .when(ledger_open, |d| {
                     let menu = self.ledger_menu(cx);
                     d.child(self.menu_frame(Some(menu), None, LEDGER_MENU_WIDTH, cx))
                 })

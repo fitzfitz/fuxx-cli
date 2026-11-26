@@ -5854,7 +5854,9 @@ impl AgentTab {
     ) -> Option<AnyElement> {
         use crate::agent_top::{PillMark, animating, ease_out_cubic, pill};
         let (status, stopping) = (self.shown_status(), self.stopping.is_some());
-        if status == Status::Idle && !stopping {
+        // One working mark (chore 17, your pick B): while the chat's status line shows, its
+        // spinner beside its words is the mark; the tab gets its own back when the line goes.
+        if (status == Status::Idle && !stopping) || self.status_line_shown() {
             return None;
         }
         let clock_now = Instant::now();
@@ -5961,16 +5963,10 @@ impl AgentTab {
     /// while a turn works or waits on you, and after a turn this tab saw end (until the next).
     pub(crate) fn status_line_now(&self, theme: &Theme) -> Option<(String, Option<String>)> {
         use crate::agent_status_line::{LineState, status_line};
-        let status = self.shown_status();
-        let live = match status {
-            Status::Working | Status::Waiting => true,
-            // A turn this tab saw (its ledger), not a conversation only restored.
-            Status::Done => self.ledger.is_some(),
-            Status::Idle => self.stopping.is_some(),
-        };
-        if !live || self.view != crate::agent_lanes::View::Main {
+        if !self.status_line_shown() {
             return None;
         }
+        let status = self.shown_status();
         let now = Instant::now();
         let parts = self
             .ledger
@@ -5989,6 +5985,18 @@ impl AgentTab {
             took: self.top.took,
             now,
         }))
+    }
+
+    /// Whether the chat's status line shows: in Main, while a turn works or waits on you, and
+    /// after a turn this tab saw end (until the next).
+    pub(crate) fn status_line_shown(&self) -> bool {
+        let live = match self.shown_status() {
+            Status::Working | Status::Waiting => true,
+            // A turn this tab saw (its ledger), not a conversation only restored.
+            Status::Done => self.ledger.is_some(),
+            Status::Idle => self.stopping.is_some(),
+        };
+        live && self.view == crate::agent_lanes::View::Main
     }
 
     /// The status line over the box (the 2026-11-24 chores: "change the Cultivating loading on

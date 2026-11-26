@@ -788,14 +788,15 @@ pub(super) fn agent_ledger_running() {
         let (line, counts) = status(cx, tab);
         assert!(line.contains(" · Running tests"), "{n}: {line:?}");
         assert_eq!(counts.as_deref(), Some("4 changed · checks pass"), "{n}");
-        let mark = part(cx, tab, n, "status");
-        let folder = part(cx, tab, n, "folder");
-        assert!(
-            mark.right() <= folder.left(),
-            "{n}: the mark before the folder"
-        );
-        assert!(mark.size.width < px(40.), "{n}: the mark alone in the tab");
+        // One working mark (chore 17, option B): the status line's; the folder tab drops its
+        // own while the line shows.
+        cx.read(|cx| tab.read(cx).shot_forget(&["status", "status-line"]));
+        let _ = frame_fresh(cx, window);
         let _ = part(cx, tab, n, "status-line");
+        assert!(
+            !cx.read(|cx| tab.read(cx).shot_part_now("status")),
+            "{n}: no status mark in the folder tab while the status line shows"
+        );
     });
 }
 
