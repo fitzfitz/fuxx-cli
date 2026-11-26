@@ -1741,3 +1741,27 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     No ui-shots scene reads a plan file and its commits (the plan scenes use a todo list), so none was run.
   - [ ] Your check: on the next plan built here, the ☰ tab ticks each task as it lands and reads all done after
     the closing docs commit (unticked boxes or not).
+- **Chore 33 (queued, not built): the send button follows the state; the box's bottom row, measured** (your words,
+  2026-11-26, after two outside critiques of the agent box: "what do you think?" → "based on your suggestions, what
+  should we build?" → "give me sample mockups" → "queue 33 and 34 and build"; mockup
+  /tmp/fuxx-mockups/box-states.html, deleted after the build). (1) The round button at the box's bottom right: empty
+  box → a quiet ↑ (muted fill, muted arrow); text typed → a solid terracotta ↑ (the theme's accent, white arrow, ⏎
+  sends); the agent running → Stop in a solid dark fill with a light square (at least 3:1 against the box, WCAG
+  1.4.11; today's dusty rose reads as disabled). Both themes. (2) The usage gauge's red badge gets a 2 pt ring in the
+  box's own colour, so it reads cut out of the gauge instead of sitting on its ring. (3) A scene check measures the
+  bottom row's items (`+`, model · effort ⌄, clock, gauge, mode ⌄, the button) on one centre line with even gaps;
+  fix only what is actually off, then pin it.
+- **Chore 34 (queued, not built): finished corner tabs shrink to their icon** (your words, 2026-11-26: the critique's
+  "single count replaces the clutter" → my take (keep the three, shrink the finished) → "I aggree, but can we remove
+  the checklist? the color says everything" → mockup → "queue 33 and 34 and build"). A corner tab (🤖 subagents,
+  ▣ shells, ☰ plan) whose work is all finished shows only its icon, in green, with no count and no ✓; an unfinished
+  one keeps its `x/n`; "needs you" always shows in full, red. Not colour alone: the missing number says done too.
+  Hovering a green icon says "10 of 10 subagents done"; a click still opens its list. Pin it in the corner-tab
+  scenes (running, some done, all done, needs you).
+- **Chore 35 (queued, not built): a local HTML page opens in fuxx's browser** (your words, 2026-11-26: "wait is it
+  bug? why is it opened in my browser instead on fuxx browser?" → found: the `open` shim fuxx writes sends only a
+  lone http(s) address to `fuxx link open`; a local file goes to macOS's open, so `open /tmp/…/page.html` opened the
+  default browser → "both" (serve it on localhost now, and queue this)). First check fuxx's browser can load a
+  `file://` page (and local images/CSS beside it); if it can, the shim (and `xdg-open`/`$BROWSER`) also sends a lone
+  `.html`/`.htm` path or `file://` address there, as a clicked link would ("Open links in"); PDFs, folders and other
+  files still go to macOS untouched. If it can't, say so here and stop. Tests for the shim's cases.
