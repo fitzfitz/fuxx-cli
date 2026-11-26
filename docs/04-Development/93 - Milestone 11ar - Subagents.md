@@ -1627,3 +1627,35 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   cropped from `agent-plan-long-command`. Add a scene (or a last frame) that ends on the folded one-line card,
   `☰ Plan approved · auto-accept edits ✓ … Show plan ›`, with a check on that line; then point the landing's
   `plan-approved` shot at it (`pnpm sync-shots` in fuxx-landing) and ship the site.
+- **Chore 25 (queued, not built; design to confirm): a calmer, shorter permission card** (your words, 2026-11-26,
+  with a picture of a Bash request for a long `git commit -F - <<'MSG' …`: "redesign this."). Today the card
+  (src/agent_rows.rs, the open permission card) shows "Claude wants to run Bash", the command in a block, then the
+  tool's raw JSON input (the same command again, escaped, plus timeout and description), three large buttons and a
+  hint line, all on a red-tinted fill. Proposed: the title is the tool's own description ("Create the commit and
+  show it…") with the tool as a small tag (`Bash`); the command once, in mono at the chat's small size, folded
+  after about 6 lines ("… 12 more lines · Show all ▾"); no raw JSON (only for a tool with no readable form, folded
+  behind "Show input"); the answers in one row of 24 pt buttons like the plan card's (chore 23): `Allow ⏎`,
+  `Always allow git commit *`, `Deny`, with "or type to redirect" quiet on the same row; attention shown by a thin
+  accent border and the shield icon, not a tinted fill. Pin it in the permission scenes (short command, long
+  heredoc, a non-Bash tool, a narrow pane).
+- **Chore 26 (queued, not built): approve a plan into Auto mode** (your words, 2026-11-26: "on plan mode, no accept
+  and goes auto."). The plan card offers auto-accept edits, approve, keep planning; it has no "approve and switch to
+  Auto". Add it (as Claude Code's own plan approval does), switching the session's mode to Auto, the mode picker
+  showing Auto after. Check how Claude's stream-json takes a mode with the plan answer (provider code in
+  src/providers/claude.rs).
+- **Chore 27 (queued, not built): switching to Auto takes effect on the next action** (your words, 2026-11-26: "when
+  I accept the plan mode with accepts edits, then I switch to mode Auto, next action is not auto. check when I change
+  it to auto on a normal mode."). After approving a plan with accept edits and then picking Auto in the mode
+  picker, the next tool call still asked. Debug first (does fuxx send the mode change to the running agent, and does
+  the agent apply it mid-session; also from a plain session, not only after a plan); fix; a test with the recorded
+  control messages.
+- **Chore 28 (queued, not built): a thin blinking caret in the commit box** (your words, 2026-11-26, with two
+  pictures: "make the cursor on this [the commit box's 'Describe your change', an orange underline cursor] to be
+  like this [the branch picker's input, a thin vertical bar] with blinking, do not put the glow cursor, we need to
+  keep performance brilliant"). The commit box's caret becomes the branch picker's thin bar, blinking at the
+  system's rate, no glow; the blink repaints only the caret's own small area (no whole-view repaints).
+- **Chore 29 (queued, not built): a little padding inside every text input** (your words, 2026-11-26: "any input
+  text, make it has small padding inside so its neat"). Every single-line and multi-line input (branch picker,
+  commit box, search fields, settings fields, rename, the agent box) gets the same small inner padding from one
+  shared token, so text and caret never touch the border. Search for the input components first and set it in one
+  place; pin it in the scenes that show inputs.
