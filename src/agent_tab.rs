@@ -1084,8 +1084,8 @@ pub struct Colors {
     pub relay_fill: Rgb,
     pub relay_text: Rgb,
     pub relay_dim: Rgb,
-    /// The subagent row chore (2026-11-24): a live subagent's robot (its row, the strip's
-    /// group, its lane's header): of the theme's blue, magenta and cyan the hue farthest from
+    /// The subagent row chore (2026-11-24): a live subagent's robot (its row, its lane's
+    /// row): of the theme's blue, magenta and cyan the hue farthest from
     /// the accent and the status colours (`agent_lanes::lane_hue`), else `panel_dim`; held to
     /// `MARK_MIN` on the rows' fills and the page.
     pub lane_ink: Rgb,
@@ -1101,7 +1101,7 @@ pub struct Colors {
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
-/// The status marks' size in the tab (the top bar's pill, the tool modal's header).
+/// The status marks' size in the tab (the folder tab's status mark, the tool modal's header).
 const MARK: f32 = 12.0;
 
 impl Colors {
@@ -2215,7 +2215,7 @@ impl AgentTab {
         self.box_texts(cx)
     }
 
-    /// The chat's status line and its counts line, as drawn (built here for the scenes, not on
+    /// The chat's status line and its chips, as drawn (built here for the scenes, not on
     /// every frame with the box's texts).
     #[cfg(feature = "ui-shots")]
     pub fn shot_status_line(
@@ -2223,6 +2223,7 @@ impl AgentTab {
         cx: &App,
     ) -> Option<(String, Vec<crate::agent_status_line::Chip>)> {
         self.status_line_now(&cx.global::<Appearance>().theme)
+            .map(|(line, chips)| (line.joined(), chips))
     }
 
     /// Where a part of the box was last laid out: `folder`, `box`, `attachments`, `attach`,
@@ -3355,13 +3356,13 @@ impl AgentTab {
         }
         self.sync_lane_marks(cx);
         self.sync_shell_marks(cx);
-        self.close_empty_shells(cx);
         self.sync_draft(cx);
         if self.rows_held {
             self.rows_pending = true;
         } else {
             self.sync_rows();
         }
+        self.close_empty_menu(cx);
         self.sync_ask(cx);
         // The modal's tool gone (a restart, a new conversation): back out to what is left.
         if let Some(modal) = &mut self.modal
@@ -5970,14 +5971,17 @@ impl AgentTab {
     pub(crate) fn status_line_now(
         &self,
         theme: &Theme,
-    ) -> Option<(String, Vec<crate::agent_status_line::Chip>)> {
-        use crate::agent_status_line::{LineState, chips, status_line};
+    ) -> Option<(
+        crate::agent_status_line::LineParts,
+        Vec<crate::agent_status_line::Chip>,
+    )> {
+        use crate::agent_status_line::{LineState, chips, line_parts};
         if !self.status_line_shown() {
             return None;
         }
         let word = self.status_word(theme);
         let question = self.question();
-        let main = status_line(&LineState {
+        let main = line_parts(&LineState {
             word: &word,
             status: self.shown_status(),
             question: question.as_deref(),

@@ -724,6 +724,29 @@ impl AgentTab {
         );
     }
 
+    /// A popover open with nothing left to hang from or show goes with its tab or chip, so the
+    /// box's keys (`/`, Esc, an ask's) work again: the shells' once your next message took the
+    /// finished ones (chore 16), the subagents' once they went (`/clear`), the ledger's once
+    /// the status row's chips did (your next message, a subagent's view: the review of chores
+    /// 17–22).
+    pub(crate) fn close_empty_menu(&mut self, cx: &mut Context<Self>) {
+        let empty = match self.menu {
+            Some(BoxMenu::Shells) => self.conversation.shells().is_empty(),
+            Some(BoxMenu::Subagents) => self.conversation.lanes().is_empty(),
+            Some(BoxMenu::Ledger) => {
+                !self.status_line_shown()
+                    || self
+                        .ledger
+                        .as_ref()
+                        .is_none_or(|l| crate::agent_status_line::chips(l).is_empty())
+            }
+            _ => false,
+        };
+        if empty {
+            self.close_menu(cx);
+        }
+    }
+
     /// The plan's tasks (the 2026-11-24 chores), over the burger tab: each ✓ done (with its
     /// commit), ◐ being built or ○ next (the subagents have their own tab since chore 19).
     pub(super) fn plan_popover(

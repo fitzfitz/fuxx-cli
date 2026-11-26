@@ -1785,7 +1785,7 @@ impl AgentTab {
     /// The tabs at the folder-tab row's right, flush with the box's edge (the folder tab
     /// mirrored, its step on their left): the subagents tab (chore 19), the shells tab (chore
     /// 16) and the plan tab, in one
-    /// tab, with the popover of either hung from its right edge: the tab with its step, or
+    /// tab, with the popover of any of them hung from its right edge: the tab with its step, or
     /// nothing without either.
     fn corner_tabs(&self, c: &Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         use crate::card_view::{EDGE, PILL_GAP, TAB_PAD};

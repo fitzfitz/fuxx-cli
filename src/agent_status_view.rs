@@ -68,8 +68,9 @@ impl AgentTab {
                         .h(px(18.))
                         .flex()
                         .items_center()
+                        .overflow_hidden()
                         .text_color(hsla(c.dim))
-                        .child(div().truncate().child(SharedString::from(main))),
+                        .child(self.line_words(main)),
                 ),
             )
             .children(chips);
@@ -83,6 +84,40 @@ impl AgentTab {
                 .child(line)
                 .into_any_element(),
         )
+    }
+
+    /// The line's words: what leads and what trails it whole, the action between them cut with
+    /// "…" when room runs short (the review of chores 17–22).
+    fn line_words(&self, parts: crate::agent_status_line::LineParts) -> gpui::Div {
+        use crate::agent_ledger::SEP;
+        let action = parts.action.map(|a| {
+            div()
+                .flex_shrink(1.)
+                .min_w(px(0.))
+                .truncate()
+                .child(SharedString::from(format!("{SEP}{a}")))
+        });
+        let tail = parts.tail.map(|t| {
+            self.marked(
+                "status-tail",
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(format!("{SEP}{t}"))),
+            )
+        });
+        div()
+            .flex()
+            .items_center()
+            .min_w(px(0.))
+            .child(
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .child(SharedString::from(parts.lead)),
+            )
+            .children(action)
+            .children(tail)
     }
 
     /// The chips on the row's right: quiet (dim, as the time), the checks' red while one fails,

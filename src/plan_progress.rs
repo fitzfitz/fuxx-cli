@@ -192,7 +192,8 @@ fn file_token(token: &str) -> Option<&str> {
 }
 
 /// Each `### Task N` section's files (chore 20): the backticked paths it names (`**Files:**`,
-/// its steps), each once, in order.
+/// its steps), each once, in order; a bare name (`claude.rs`) a path of the same section ends
+/// in is that file, so it goes.
 pub fn task_files(md: &str) -> Vec<Vec<String>> {
     let mut out: Vec<Vec<String>> = Vec::new();
     for line in md.lines() {
@@ -212,6 +213,10 @@ pub fn task_files(md: &str) -> Vec<Vec<String>> {
             }
         }
     }
+    for files in &mut out {
+        let full = files.clone();
+        files.retain(|f| f.contains('/') || !full.iter().any(|p| p != f && names_file(p, f)));
+    }
     out
 }
 
@@ -224,35 +229,59 @@ fn names_file(path: &str, named: &str) -> bool {
 /// Marks done the tasks not done yet whose named files (`files`, by task) the commits since the
 /// plan (`commits`: hash and changed paths, newest first) touched, more than half of them, with
 /// the oldest commit that touched the most of them (chore 20: commits saying "Chore 16: …").
+/// A commit counts for a task only when it is newer than the newest commit an earlier task was
+/// done by, or touches a file this task names and no earlier one does (the review: an earlier
+/// task's commit touching a later task's files ticked it before it was built).
 pub fn match_files(
     tasks: &mut [PlanTask],
     commits: &[(String, Vec<String>)],
     files: &[Vec<String>],
 ) {
-    for (task, named) in tasks.iter_mut().zip(files) {
-        if named.is_empty() || matches!(task.state, TaskState::Done { .. }) {
-            continue;
+    let touches = |paths: &[String], f: &str| paths.iter().any(|p| names_file(p, f));
+    let same = |a: &str, b: &str| names_file(a, b) || names_file(b, a);
+    let at = |hash: &str| commits.iter().position(|(h, _)| h == hash);
+    // The newest commit an earlier task was done by, as its place (newest first: smaller).
+    let mut floor: Option<usize> = None;
+    for (k, named) in files.iter().enumerate().take(tasks.len()) {
+        if !matches!(tasks[k].state, TaskState::Done { .. }) && !named.is_empty() {
+            let earlier: Vec<&String> = files[..k].iter().flatten().collect();
+            let own: Vec<&String> = named
+                .iter()
+                .filter(|f| !earlier.iter().any(|e| same(e, f)))
+                .collect();
+            let counting: Vec<&(String, Vec<String>)> = commits
+                .iter()
+                .enumerate()
+                .filter(|(i, (_, paths))| {
+                    floor.is_none_or(|f| *i < f) || own.iter().any(|f| touches(paths, f))
+                })
+                .map(|(_, c)| c)
+                .collect();
+            let touched = named
+                .iter()
+                .filter(|f| counting.iter().any(|(_, paths)| touches(paths, f)))
+                .count();
+            if touched * 2 > named.len() {
+                // Of those touching the most, the oldest: the one that built it (later ones fix
+                // it).
+                let best = counting
+                    .iter()
+                    .rev()
+                    .map(|(hash, paths)| (named.iter().filter(|f| touches(paths, f)).count(), hash))
+                    .fold(None::<(usize, &String)>, |best, (n, hash)| match best {
+                        Some((m, _)) if m >= n => best,
+                        _ => Some((n, hash)),
+                    });
+                tasks[k].state = TaskState::Done {
+                    commit: best.map(|(_, hash)| hash.clone()),
+                };
+            }
         }
-        let touches = |paths: &[String], f: &str| paths.iter().any(|p| names_file(p, f));
-        let touched = named
-            .iter()
-            .filter(|f| commits.iter().any(|(_, paths)| touches(paths, f)))
-            .count();
-        if touched * 2 <= named.len() {
-            continue;
+        if let TaskState::Done { commit: Some(hash) } = &tasks[k].state
+            && let Some(i) = at(hash)
+        {
+            floor = Some(floor.map_or(i, |f| f.min(i)));
         }
-        // Of those touching the most, the oldest: the one that built it (later ones fix it).
-        let best = commits
-            .iter()
-            .rev()
-            .map(|(hash, paths)| (named.iter().filter(|f| touches(paths, f)).count(), hash))
-            .fold(None::<(usize, &String)>, |best, (n, hash)| match best {
-                Some((m, _)) if m >= n => best,
-                _ => Some((n, hash)),
-            });
-        task.state = TaskState::Done {
-            commit: best.map(|(_, hash)| hash.clone()),
-        };
     }
 }
 
@@ -750,9 +779,9 @@ mod tests {
             [
                 "src/agent_shells.rs",
                 "src/agent_conversation.rs",
-                "src/main.rs",
-                "agent_shells.rs"
-            ]
+                "src/main.rs"
+            ],
+            "a bare name a path of the section ends in is that file, once"
         );
         assert_eq!(
             files[4],
@@ -769,6 +798,113 @@ mod tests {
             ),
             [vec!["src/retry.rs".to_string()]]
         );
+    }
+
+    /// Chores 17–22's plan (docs/superpowers/plans/2026-11-26-chores-17-21.md), its tasks'
+    /// `**Files:**` lines, verbatim.
+    const CHORES_17_22_PLAN: &str = "\
+### Task 1: Chore 20 — commits that touched a task's files tick it
+**Files:** Modify `src/plan_progress.rs` (+ tests), `src/agent_tab.rs` (`refresh_plan`, `recent_commits`).
+### Task 2: Chore 17 — one working mark
+**Files:** `src/agent_tab.rs` (`status_line_shown`, `status_line_now`, `status_pill`), `src/agent_box.rs` (the status slot keeps the ledger popover without the pill), `src/ui_shots/agent_activity.rs` (`agent-ledger-running`).
+### Task 3: Chore 18 — the left step meets the box's line
+**Files:** `src/agent_box.rs` (`corner_tabs`: the step painted after the tab, in a wrapper with the step's 15 pt in flow), `src/ui_shots/agent_activity.rs` (`plan_scene`).
+### Task 4: Chore 19 — the subagents corner tab and the breadcrumb
+**Files:** Create `src/agent_subagents_view.rs` (impl AgentTab: `subagents_tab`, `subagents_popover`, `toggle_subagents`, `open_subagent`); create `src/ui_shots/agent_subagents.rs` (scenes); modify `src/agent_box.rs` (`BoxMenu::Subagents`, `corner_tabs` order: shells, plan, subagents), `src/agent_box_menus.rs` (plan popover: tasks only; Subagents closes on press-out), `src/agent_lanes_view.rs` (strip removed; `lane_header` → breadcrumb row), `src/agent_lanes.rs` (strip-only helpers removed, a pure `subagent_counts`/`tab_words`), `src/agent_tab.rs` (fields, render), `src/ui_shots/agent_lanes.rs` + registry.
+### Task 5: Chore 21 — no empty band
+**Files:** `src/agent_tab.rs` (`top_line` keeps only its width probe, no height; the scrims from the top), `src/agent_lanes_view.rs` (the breadcrumb row `pt(chat::FIRST_TOP − (row − pill)/2)`), scenes.
+### Task 6: Chore 22 — the counts become chips on the status row's right
+**Files:** `src/agent_ledger.rs` (`Ledger::checking`: a running call is a check), `src/agent_status_line.rs` (`Chip`, `ChipKind`, `ChipState`, `chips(ledger)`; `status_line` returns the main line only), `src/agent_tab.rs` (`status_strip`: one row, the main line truncating, the chips pinned right; `ledger_part`; the ledger popover hung from the chips), `src/agent_box.rs` (the status slot holds only the mark again), `src/agent_box_menus.rs` (`ledger_menu` shows the clicked chip's section), `src/ui_shots/agent_activity.rs`.
+### Task 7: Whole change
+- [ ] `scripts/ui-shots.sh --changed 5103f17`; one Opus review; `scripts/prune-target.sh`.
+";
+
+    /// The review of chores 17–22 (finding 1): replaying that plan's own commits one by one,
+    /// each commit ticks its own task only — a later task whose files an earlier task's commit
+    /// touched waits for a commit of its own.
+    #[test]
+    fn a_plan_replayed_commit_by_commit_ticks_one_task_at_a_time() {
+        let all: [(&str, &[&str]); 6] = [
+            (
+                "e178869",
+                &[
+                    "docs/superpowers/plans/2026-11-26-chores-17-21.md",
+                    "src/agent_tab.rs",
+                    "src/plan_progress.rs",
+                ],
+            ),
+            (
+                "cfcda49",
+                &[
+                    "src/agent_box.rs",
+                    "src/agent_tab.rs",
+                    "src/ui_shots/agent_activity.rs",
+                ],
+            ),
+            (
+                "25521df",
+                &["src/agent_box.rs", "src/ui_shots/agent_activity.rs"],
+            ),
+            (
+                "9bcdd46",
+                &[
+                    "src/agent_box.rs",
+                    "src/agent_box_menus.rs",
+                    "src/agent_lane_row.rs",
+                    "src/agent_lanes.rs",
+                    "src/agent_lanes_view.rs",
+                    "src/agent_shells_view.rs",
+                    "src/agent_subagents.rs",
+                    "src/agent_subagents_view.rs",
+                    "src/agent_tab.rs",
+                    "src/icons.rs",
+                    "src/main.rs",
+                    "src/ui_shots/agent_lanes.rs",
+                    "src/ui_shots/agent_subagents.rs",
+                    "src/ui_shots/mod.rs",
+                    "src/ui_shots/registry.rs",
+                ],
+            ),
+            (
+                "5d7ebd6",
+                &[
+                    "src/agent_lanes_view.rs",
+                    "src/agent_tab.rs",
+                    "src/ui_shots/agent.rs",
+                    "src/ui_shots/agent_subagents.rs",
+                ],
+            ),
+            (
+                "8b52ed1",
+                &[
+                    "docs/superpowers/plans/2026-11-26-chores-17-21.md",
+                    "src/agent_box.rs",
+                    "src/agent_box_menus.rs",
+                    "src/agent_ledger.rs",
+                    "src/agent_status_line.rs",
+                    "src/agent_status_view.rs",
+                    "src/agent_tab.rs",
+                    "src/ui_shots/agent_activity.rs",
+                ],
+            ),
+        ];
+        for landed in 1..=all.len() {
+            // Newest first, as git gives them.
+            let touched: Vec<(String, Vec<String>)> = all[..landed]
+                .iter()
+                .rev()
+                .map(|(h, f)| (h.to_string(), f.iter().map(|p| p.to_string()).collect()))
+                .collect();
+            let mut tasks = from_checklist(CHORES_17_22_PLAN);
+            match_files(&mut tasks, &touched, &task_files(CHORES_17_22_PLAN));
+            let done: Vec<usize> = (0..tasks.len()).filter(|&i| done(&tasks[i])).collect();
+            assert_eq!(
+                done,
+                (0..landed).collect::<Vec<_>>(),
+                "after {}",
+                all[landed - 1].0
+            );
+        }
     }
 
     /// The review focus: a plan nobody has built ticks nothing by its files, nor does a commit

@@ -76,7 +76,7 @@ pub fn running_word(lanes: &[Lane]) -> Option<String> {
         .then(|| "Orchestrating…".to_string())
 }
 
-/// The lanes' places in the strip, after Main: newest first (your words, 2026-11-22: "make
+/// The lanes' order for ⌥⌘[ / ⌥⌘], after Main: newest first (your words, 2026-11-22: "make
 /// sure it sorts by newest"). Indexes into `lanes` (start order).
 pub fn shown_order(lanes: &[Lane]) -> Vec<usize> {
     (0..lanes.len()).rev().collect()
@@ -198,7 +198,7 @@ pub fn bar_words(
     }
 }
 
-/// A lane pill's tooltip (the lanes chore): its state and time, its task's first line, whether
+/// A lane's tooltip (the lanes chore; its chat row's first line): its state and time, its task's first line, whether
 /// you can message it (an agent whose Main `relays`), and "resumed" once it ran again.
 pub fn pill_tip(lane: &Lane, time: Option<std::time::Duration>, relays: bool) -> String {
     let t = time.map(clock);
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn stepping_goes_through_main_then_the_lanes() {
-        // Pills newest first after Main (your words, 2026-11-22: "make sure it sorts by
+        // Newest first after Main (your words, 2026-11-22: "make sure it sorts by
         // newest"): `b` started after `a`.
         let lanes = [lane("a", "A"), lane("b", "B")];
         assert_eq!(shown_order(&lanes), [1, 0]);

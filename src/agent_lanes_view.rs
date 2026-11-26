@@ -91,6 +91,8 @@ impl AgentTab {
             self.bar_was = matches!(self.box_mode(cx), BoxMode::Bar(_));
             self.sync_rows();
             self.update_placeholder(cx);
+            // The status row (and its chips) is Main's: a ledger popover goes with it.
+            self.close_empty_menu(cx);
         }
         cx.notify();
     }

@@ -42,7 +42,7 @@ impl AgentTab {
             tab_words(lanes),
             ink,
             BoxMenu::Subagents,
-            "Subagents  \u{2325}\u{2318}[ \u{2325}\u{2318}]",
+            "Subagents",
             |this, _, cx| this.toggle_subagents(cx),
             c,
             cx,

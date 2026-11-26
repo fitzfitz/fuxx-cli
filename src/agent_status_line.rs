@@ -32,34 +32,72 @@ fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").trim_end().to_string()
 }
 
-/// The line's words (its counts are the chips on its right: `chips`).
-pub fn status_line(s: &LineState) -> String {
+/// The line in three: what leads it (the task, the status word), the action (the running
+/// call's title, or the question) that gives way with "…" when room runs short, and what
+/// trails it (its time, "+N more").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineParts {
+    pub lead: String,
+    pub action: Option<String>,
+    pub tail: Option<String>,
+}
+
+impl LineParts {
+    /// The parts as one line (the tests' and the scenes' view of it).
+    #[cfg(any(test, feature = "ui-shots"))]
+    pub fn joined(&self) -> String {
+        std::iter::once(self.lead.clone())
+            .chain(self.action.clone())
+            .chain(self.tail.clone())
+            .collect::<Vec<_>>()
+            .join(SEP)
+    }
+}
+
+/// The line's parts (`LineParts`).
+pub fn line_parts(s: &LineState) -> LineParts {
+    let joined = |words: Vec<String>| (!words.is_empty()).then(|| words.join(SEP));
     match s.status {
-        Status::Waiting => {
-            let mut words = vec!["Waiting for you".to_string()];
-            words.extend(s.question.map(first_line));
-            words.join(SEP)
-        }
-        Status::Done => {
-            // The strip's mark is the ✓.
-            let mut words = vec!["Done".to_string()];
-            words.extend(s.took.map(clock));
-            words.join(SEP)
-        }
+        Status::Waiting => LineParts {
+            lead: "Waiting for you".into(),
+            action: s.question.map(first_line),
+            tail: None,
+        },
+        // The strip's mark is the ✓.
+        Status::Done => LineParts {
+            lead: joined(
+                std::iter::once("Done".to_string())
+                    .chain(s.took.map(clock))
+                    .collect(),
+            )
+            .unwrap_or_default(),
+            action: None,
+            tail: None,
+        },
         Status::Working | Status::Idle => {
-            let mut words: Vec<String> = Vec::new();
-            words.extend(s.task.map(|(at, of)| format!("Task {at}/{of}")));
-            words.push(s.word.to_string());
+            let mut lead: Vec<String> = Vec::new();
+            lead.extend(s.task.map(|(at, of)| format!("Task {at}/{of}")));
+            lead.push(s.word.to_string());
+            let mut tail: Vec<String> = Vec::new();
             if let Some(r) = s.running {
-                words.push(first_line(&r.title));
-                words.extend(r.started.map(|t| clock(s.now.saturating_duration_since(t))));
+                tail.extend(r.started.map(|t| clock(s.now.saturating_duration_since(t))));
                 if r.more > 0 {
-                    words.push(format!("+{} more", r.more));
+                    tail.push(format!("+{} more", r.more));
                 }
             }
-            words.join(SEP)
+            LineParts {
+                lead: lead.join(SEP),
+                action: s.running.map(|r| first_line(&r.title)),
+                tail: joined(tail),
+            }
         }
     }
+}
+
+/// The line's words as one string (its counts are the chips on its right: `chips`).
+#[cfg(test)]
+pub fn status_line(s: &LineState) -> String {
+    line_parts(s).joined()
 }
 
 /// A chip on the status row's right (chore 22): what it counts.
@@ -187,6 +225,47 @@ mod tests {
             status_line(&s),
             "Cultivating… · Run the full e2e suite · 0:31 · +2 more"
         );
+    }
+
+    /// The review of chores 17–22 (finding 3): only the action gives way ("…"); the word before
+    /// it and the time and "+N more" after it stay.
+    #[test]
+    fn the_line_splits_round_its_action() {
+        let now = Instant::now();
+        let r = running(now, 2);
+        let s = LineState {
+            running: Some(&r),
+            task: Some((5, 6)),
+            ..state(now)
+        };
+        assert_eq!(
+            line_parts(&s),
+            LineParts {
+                lead: "Task 5/6 · Cultivating…".into(),
+                action: Some("Run the full e2e suite".into()),
+                tail: Some("0:31 · +2 more".into()),
+            }
+        );
+        let asking = LineState {
+            status: Status::Waiting,
+            question: Some("Allow Bash?"),
+            ..state(now)
+        };
+        assert_eq!(
+            line_parts(&asking),
+            LineParts {
+                lead: "Waiting for you".into(),
+                action: Some("Allow Bash?".into()),
+                tail: None,
+            }
+        );
+        let done = LineState {
+            status: Status::Done,
+            took: Some(Duration::from_secs(42)),
+            ..state(now)
+        };
+        assert_eq!(line_parts(&done).joined(), "Done · 0:42");
+        assert_eq!(line_parts(&s).joined(), status_line(&s));
     }
 
     #[test]

@@ -935,6 +935,16 @@ pub(super) fn agent_ledger_done() {
             "{n}: each scope's latest passed"
         );
         chips_on_the_row(n, cx, tab);
+        // Your next message: its turn has no chips yet, so the open popover goes with them
+        // (the review of chores 17–22: it stayed "open" unseen, holding the box's keys).
+        click(cx, window, part(cx, tab, n, "status-changed"));
+        assert!(cx.read(|cx| tab.read(cx).shot_menu()).is_some(), "{n}");
+        feed(cx, tab, |t, cx| t.send("And the docs".into(), cx));
+        let _ = frame_fresh(cx, window);
+        assert!(
+            cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
+            "{n}: no popover left open with nothing to show"
+        );
     });
 }
 
@@ -951,8 +961,15 @@ pub(super) fn agent_ledger_trimmed() {
             let _ = frame_fresh(cx, window);
             let (line, _) = status(cx, tab);
             assert!(line.contains("Running tests"), "{n}: {line:?}");
-            // The line gives way (cut with "…"), the chips keep their place (chore 22).
+            // The line gives way (its action cut with "…"), the chips keep their place (chore
+            // 22), and its time stays whole after the action (the review's finding 3).
             chips_on_the_row(n, cx, tab);
+            let tail = part(cx, tab, n, "status-tail");
+            let chips = part(cx, tab, n, "status-chips");
+            assert!(
+                tail.size.width > px(20.) && tail.right() <= chips.left(),
+                "{n}: the time whole, before the chips ({tail:?} vs {chips:?})"
+            );
             let chips = part(cx, tab, n, "status-chips");
             assert!(
                 chips.right() <= px(480.),
