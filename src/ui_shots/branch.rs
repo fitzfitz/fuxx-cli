@@ -21,6 +21,7 @@ pub(super) const SCENES: &[Scene] = &[
             "src/overlay_panel.rs",
             "src/palette.rs",
             "src/palette_items.rs",
+            "src/name_input.rs",
         ],
     },
     Scene {
@@ -190,6 +191,17 @@ fn branch_switcher_scene() {
                         );
                     }
                     assert_eq!(lines(cx), want_lines, "{n}: the lines");
+                    // Chore 29: the text and caret sit `input::PAD_X` / `PAD_Y` inside the
+                    // field's 1 pt edge, never on it (measured from inside the edge).
+                    let (left, top) = cx
+                        .read(|cx| sw.read(cx).input_insets(cx))
+                        .expect("the field is drawn");
+                    let pad = crate::ui_tokens::input::PAD_X;
+                    let pad_y = crate::ui_tokens::input::PAD_Y;
+                    assert!(
+                        (left - pad).abs() < 0.5 && (top - pad_y).abs() < 0.5,
+                        "{n}: the field's inside padding ({left}, {top})"
+                    );
                     assert_eq!(chosen(cx).as_deref(), Some("feature/rows"), "{n}: first");
                     press_keys(cx, window, "down");
                     assert_eq!(chosen(cx).as_deref(), Some("spike"), "{n}: ↓");

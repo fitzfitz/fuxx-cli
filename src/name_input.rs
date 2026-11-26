@@ -76,6 +76,9 @@ pub struct NameInput {
     /// timer at a time, only while the caret will flip again.
     blink: crate::caret_blink::Blinker,
     blink_timer: Option<gpui::Task<()>>,
+    /// The frame as last painted (scenes measure the text's inset in it, chore 29).
+    #[cfg(feature = "ui-shots")]
+    frame: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     /// ⌘Z / ⇧⌘Z (the 2026-11-24 chores): the text and selection before each step.
     history: crate::undo_history::UndoHistory<(String, Range<usize>)>,
     _blur: Subscription,
@@ -109,6 +112,8 @@ impl NameInput {
             bare: false,
             blink: crate::caret_blink::Blinker::new(std::time::Instant::now()),
             blink_timer: None,
+            #[cfg(feature = "ui-shots")]
+            frame: Default::default(),
             history: Default::default(),
             _blur: blur,
         }
@@ -640,7 +645,9 @@ impl Render for NameInput {
             // Its own text colour with its own fill: the row under it may be filled with
             // anything (the selected row's accent, with its ink).
             .when(!self.bare, |d| {
-                d.px_1()
+                // Chore 29: the text and caret clear of the edge.
+                d.px(px(crate::ui_tokens::input::PAD_X))
+                    .py(px(crate::ui_tokens::input::PAD_Y))
                     .rounded_sm()
                     .border_1()
                     .border_color(hsla(edge))
@@ -675,6 +682,33 @@ impl Render for NameInput {
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .child(NameText { input: cx.entity() })
+            .map(|d| {
+                #[cfg(feature = "ui-shots")]
+                {
+                    let frame = self.frame.clone();
+                    d.child(
+                        gpui::canvas(move |b, _, _| frame.set(Some(b)), |_, _, _, _| {})
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                    )
+                }
+                #[cfg(not(feature = "ui-shots"))]
+                d
+            })
+    }
+}
+
+impl NameInput {
+    /// How far inside its frame's edge the text starts, (left, top), as last painted (chore 29).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_insets(&self) -> Option<(f32, f32)> {
+        let (frame, text) = (self.frame.get()?, self.last_bounds?);
+        Some((
+            f32::from(text.left() - frame.left()),
+            f32::from(text.top() - frame.top()),
+        ))
     }
 }
 

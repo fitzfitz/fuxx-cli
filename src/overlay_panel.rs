@@ -58,10 +58,13 @@ pub fn filter_box(
             field.child(
                 div()
                     .absolute()
-                    // Inside the box's 1 px border and 4 px padding, and clear of the caret at
-                    // the start (its width and 1 pt: it never covers the first letter).
-                    .top(px(1.0))
-                    .left(px(5.0 + crate::cursor_look::PLACEHOLDER_IN))
+                    // Inside the box's 1 px border and padding (`input`, chore 29), and clear of
+                    // the caret at the start (its width and 1 pt: it never covers the first
+                    // letter).
+                    .top(px(1.0 + crate::ui_tokens::input::PAD_Y))
+                    .left(px(1.0
+                        + crate::ui_tokens::input::PAD_X
+                        + crate::cursor_look::PLACEHOLDER_IN))
                     .text_color(hsla(ui.text_dim))
                     .child(placeholder),
             )

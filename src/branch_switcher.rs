@@ -1482,6 +1482,12 @@ impl BranchSwitcher {
     pub fn query_text(&self, cx: &App) -> String {
         self.input.read(cx).text().to_string()
     }
+
+    /// How far inside its frame the box's text starts, (left, top) (chore 29).
+    #[cfg(feature = "ui-shots")]
+    pub fn input_insets(&self, cx: &App) -> Option<(f32, f32)> {
+        self.input.read(cx).shot_insets()
+    }
 }
 
 impl Render for BranchSwitcher {
