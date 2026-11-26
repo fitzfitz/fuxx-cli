@@ -365,6 +365,8 @@ pub(super) const ORDER: &[&str] = &[
     "agent-ledger-done",
     "agent-ledger-trimmed",
     "agent-ledger-popover",
+    "agent-ledger-files",
+    "agent-ledger-checks",
     "agent-plan-tab",
     "agent-plan-tab-narrow",
     "agent-plan-waiting",

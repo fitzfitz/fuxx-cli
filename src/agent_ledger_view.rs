@@ -120,28 +120,30 @@ impl AgentTab {
                 } else {
                     crate::icons::Icon::ChevronDown
                 };
+                let folder = popover::row()
+                    .id((id, 10_000 + *n))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hsla(hover)))
+                    .child(popover::mark_cell(crate::icons::icon(
+                        chevron,
+                        px(12.),
+                        hsla(ui.text_dim),
+                    )))
+                    // A long folder (one outside) keeps its end.
+                    .child(
+                        popover::mono(group.folder.clone(), ui.text_dim, mono.clone())
+                            .text_ellipsis_start(),
+                    )
+                    .child(popover::tail(group.rows.len().to_string(), ui.text_faint))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.ledger_folded.remove(&key) {
+                            this.ledger_folded.insert(key.clone());
+                        }
+                        cx.notify();
+                    }));
+                // Probed as `folder:<its folder>` (the scenes read the rows in order).
                 out.push(
-                    popover::row()
-                        .id((id, 10_000 + *n))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hsla(hover)))
-                        .child(popover::mark_cell(crate::icons::icon(
-                            chevron,
-                            px(12.),
-                            hsla(ui.text_dim),
-                        )))
-                        // A long folder (one outside) keeps its end.
-                        .child(
-                            popover::mono(group.folder.clone(), ui.text_dim, mono.clone())
-                                .text_ellipsis_start(),
-                        )
-                        .child(popover::tail(group.rows.len().to_string(), ui.text_faint))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if !this.ledger_folded.remove(&key) {
-                                this.ledger_folded.insert(key.clone());
-                            }
-                            cx.notify();
-                        }))
+                    self.marked_row(format!("folder:{}", group.folder), folder)
                         .into_any_element(),
                 );
             }

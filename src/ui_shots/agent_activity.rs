@@ -93,6 +93,8 @@ pub(super) const SCENES: &[Scene] = &[
     scene("agent-ledger-done", agent_ledger_done, LEDGER),
     scene("agent-ledger-trimmed", agent_ledger_trimmed, LEDGER),
     scene("agent-ledger-popover", agent_ledger_popover, LEDGER),
+    scene("agent-ledger-files", agent_ledger_files, LEDGER),
+    scene("agent-ledger-checks", agent_ledger_checks, LEDGER),
     scene("agent-plan-tab", agent_plan_tab, PLAN),
     scene("agent-plan-tab-narrow", agent_plan_tab_narrow, PLAN),
     scene("agent-plan-waiting", agent_plan_waiting, PLAN_CARD),
@@ -1076,6 +1078,101 @@ pub(super) fn agent_ledger_popover() {
         );
         click(cx, window, part(cx, tab, n, "status-changed"));
         let _ = frame_fresh(cx, window);
+    });
+}
+
+/// Chore 36, your picture of the files popover: the turn edited `src/agent_tab.rs`,
+/// `src/browser/probe.rs`, then `src/agent_box.rs`, and wrote its log in /tmp. One `src` folder
+/// (sorted), then `src/browser`; the log last, under "Outside the project", and not counted:
+/// `3 changed`.
+pub(super) fn agent_ledger_files() {
+    shoot("agent-ledger-files", DIMS, |n, cx, window, tab, _| {
+        feed(cx, tab, |t, cx| t.send("Build the chores".into(), cx));
+        let mut events = Turn::new()
+            .say("Building the chores.")
+            .edit("src/agent_tab.rs", "a", "b\nc")
+            .edit("src/browser/probe.rs", "a", "b")
+            .edit("src/agent_box.rs", "a", "b\nc\nd")
+            .call(
+                "Write",
+                json!({"file_path": "/tmp/fx/logs/run.log", "content": "ok\n"}),
+                Some(("File created successfully.", false)),
+            )
+            .events();
+        events.push(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        give(cx, tab, events);
+        let _ = frame_fresh(cx, window);
+        let (_, chips) = status(cx, tab);
+        assert_eq!(chips[0].2, "3 changed", "{n}: the log isn't counted");
+        click(cx, window, part(cx, tab, n, "status-changed"));
+        let _ = frame_fresh(cx, window);
+        let labels = cx.read(|cx| tab.read(cx).shot_menu_labels());
+        assert_eq!(
+            labels,
+            [
+                "folder:src",
+                "src/agent_box.rs",
+                "src/agent_tab.rs",
+                "folder:src/browser",
+                "src/browser/probe.rs",
+                "folder:/tmp/fx/logs",
+                "/tmp/fx/logs/run.log",
+            ],
+            "{n}: each folder once, sorted; outside last"
+        );
+    });
+}
+
+/// Chore 36, your picture of the checks popover: the test build and the ui-shots build piped
+/// (no verdict; the build twice), a test that failed then passed, and clippy piped: four rows,
+/// one mark each, under "1/4 passed" (it said "1/6": runs).
+pub(super) fn agent_ledger_checks() {
+    shoot("agent-ledger-checks", DIMS, |n, cx, window, tab, _| {
+        feed(cx, tab, |t, cx| t.send("Run the checks".into(), cx));
+        let piped = "   Compiling fuxx v0.13.0\n";
+        let passed_1 = "running 1 test\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let mut events = Turn::new()
+            .say("Running the checks.")
+            .bash(
+                "cargo test --bin fuxx --no-run 2>&1 | tail -3",
+                Some((piped, false)),
+            )
+            .bash(
+                "cargo build --features ui-shots 2>&1 | tail -3",
+                Some((piped, false)),
+            )
+            .bash(
+                "cargo build --features ui-shots 2>&1 | tail -3",
+                Some((piped, false)),
+            )
+            .bash(
+                "cargo test --bin fuxx the_task",
+                Some((&failed_run(CARGO_FAILED), true)),
+            )
+            .bash("cargo test --bin fuxx the_task", Some((passed_1, false)))
+            .bash(
+                "cargo clippy --all-targets 2>&1 | tail -3",
+                Some((piped, false)),
+            )
+            .events();
+        events.push(Event::TurnDone {
+            ok: true,
+            message: None,
+        });
+        give(cx, tab, events);
+        let _ = frame_fresh(cx, window);
+        let l = cx
+            .read(|cx| tab.read(cx).shot_ledger())
+            .unwrap_or_else(|| panic!("{n}: a ledger"));
+        assert_eq!((l.passed, l.total, l.scopes.len()), (1, 4, 4), "{n}");
+        click(cx, window, part(cx, tab, n, "status-checks"));
+        let _ = frame_fresh(cx, window);
+        let labels = cx.read(|cx| tab.read(cx).shot_menu_labels());
+        let scopes: Vec<String> = l.scopes.iter().map(|s| s.scope.clone()).collect();
+        assert_eq!(labels, scopes, "{n}: a row per scope");
     });
 }
 
