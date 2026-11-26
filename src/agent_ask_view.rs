@@ -1058,8 +1058,19 @@ impl AgentTab {
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(hsla(c.ask_text))
             .line_height(relative(1.45))
-            .when(compact, |d| d.line_clamp(2))
+            // The clamp with its "…": GPUI truncates the words to two lines then. A bare clamp
+            // stops wrapping at the last line (the rest runs off the edge), and GPUI's line
+            // cache, keyed without the clamp, handed that layout to the chat's card too.
+            .when(compact, |d| d.line_clamp(2).text_ellipsis())
             .child(SharedString::from(q.text.clone()));
+        let words = self.marked(
+            if tag == "dock" {
+                "ask-words-dock"
+            } else {
+                "ask-words"
+            },
+            words,
+        );
         let light = c.ask_cursor;
         let row = |i: usize| {
             div()

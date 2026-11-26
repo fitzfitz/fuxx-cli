@@ -322,6 +322,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-tab-question-anyway",
     "agent-tab-question-armed",
     "agent-tab-question-dock-tiny",
+    "agent-tab-question-dock-long",
     "agent-tab-question-answered-line",
     "agent-tab-question-head-clear",
     "agent-tab-question-agy",

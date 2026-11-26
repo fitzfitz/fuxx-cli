@@ -1376,7 +1376,9 @@ impl AgentTab {
                         div()
                             .text_size(px(12.))
                             .text_color(hsla(ui.text_dim))
+                            // With its "…": a bare clamp runs the rest off the edge.
                             .line_clamp(2)
+                            .text_ellipsis()
                             .child(about),
                     ),
             )

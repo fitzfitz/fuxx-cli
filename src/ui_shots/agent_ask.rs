@@ -105,6 +105,7 @@ pub(super) const SCENES: &[Scene] = &[
     visual("agent-tab-question-anyway", agent_tab_question_anyway),
     visual("agent-tab-question-armed", agent_tab_question_armed),
     visual("agent-tab-question-dock-tiny", agent_tab_question_dock_tiny),
+    visual("agent-tab-question-dock-long", agent_tab_question_dock_long),
     visual(
         "agent-tab-question-answered-line",
         agent_tab_question_answered_line,
@@ -1109,6 +1110,74 @@ pub(super) fn agent_tab_question_dock_tiny() {
             },
         );
     }
+}
+
+/// The question as long as the user's (2026-11-26): its card too tall for the dock, so the
+/// dock is compact, the question clamped to two lines ending in "…". Back in the chat, the
+/// card's question wraps whole: it ran off the card's edge on its second line once, the chat's
+/// card drawing the dock's clamped layout (GPUI keys its wrapped-line cache without the clamp).
+pub(super) fn agent_tab_question_dock_long() {
+    const LONG: &str = "Should a failed rebuild show a popup with Retry? Today Retry shows \
+        only when a build fails before its first release; a failure after one is answered with \
+        a fix in the chat, and the popup would change that rule for every tab that started a \
+        build, including the ones already waiting on a long test run in the background.";
+    let line_h = crate::ui_tokens::text::NAME * 1.45;
+    scene_sized(
+        "agent-tab-question-dock-long",
+        DIMS,
+        |n, cx, window, tab| {
+            feed(cx, tab, |t, cx| t.shot_history(long_past(), cx));
+            feed(cx, tab, |t, cx| {
+                t.send("Set up tests for the app".into(), cx)
+            });
+            let words = |cx: &VisualTestAppContext, part: &str| {
+                cx.read(|cx| tab.read(cx).shot_part(part))
+                    .map(|b| f32::from(b.size.height))
+                    .expect(part)
+            };
+            let away = |cx: &mut VisualTestAppContext| {
+                cx.read(|cx| {
+                    tab.read(cx).shot_list().scroll_to(ListOffset {
+                        item_ix: 0,
+                        offset_in_item: px(0.),
+                    })
+                });
+                cx.update_window(window, |_, window, _| window.refresh())
+                    .unwrap();
+                settle_frames(cx, window);
+            };
+            let docked_two_lines = |cx: &mut VisualTestAppContext| {
+                let ask = ask_of(cx, tab);
+                assert_eq!(
+                    ask.dock,
+                    Some(crate::agent_ask::DockKind::Compact),
+                    "{n}: {ask:?}"
+                );
+                let docked = words(cx, "ask-words-dock");
+                assert!(docked < 2.5 * line_h, "{n}: two lines docked: {docked}");
+            };
+            // Asked while you read further up (the user's order): the dock lays it out first.
+            away(cx);
+            let lines = lines_to_question()
+                .into_iter()
+                .map(|l| l.replace("Which test runner should I set up?", LONG))
+                .collect();
+            hear(cx, tab, lines);
+            settle_frames(cx, window);
+            docked_two_lines(cx);
+            // Back in sight: the card's question wraps whole, not the dock's two lines.
+            cx.read(|cx| tab.read(cx).shot_list().scroll_to_end());
+            cx.update_window(window, |_, window, _| window.refresh())
+                .unwrap();
+            settle_frames(cx, window);
+            assert!(!ask_of(cx, tab).docked, "{n}: back in sight");
+            let in_chat = words(cx, "ask-words");
+            assert!(in_chat > 2.5 * line_h, "{n}: the whole question: {in_chat}");
+            // And away once more (the card laid out first now), for the shot: the compact dock.
+            away(cx);
+            docked_two_lines(cx);
+        },
+    );
 }
 
 /// Answered, the line as it is left live (the design review's scene): "Answered · Test runner:
