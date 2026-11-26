@@ -435,6 +435,7 @@ impl Conversation {
                     self.reply(&id, reply);
                 }
             }
+            Event::ShellStarted { .. } | Event::ShellEnded { .. } => {}
             Event::Todo(list) => match self.items.iter().position(|i| matches!(i, Item::Todo(_))) {
                 Some(ix) => {
                     *self.items.get_mut(ix) = Item::Todo(list);

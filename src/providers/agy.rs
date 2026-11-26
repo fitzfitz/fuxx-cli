@@ -1141,6 +1141,8 @@ impl Translator for AgyTranslator {
         match action {
             // agy can't stop one subagent from outside (its lanes never offer it).
             Action::StopSubagent { .. } => Vec::new(),
+            // agy says no background shells (its `run_command` goes async on its own).
+            Action::StopShell { .. } => Vec::new(),
             // Its images reach it as paths in `text` (`sends_images` is false).
             Action::Send { text, .. } => {
                 vec![json!({"event": "user", "message": {"content": text}}).to_string()]

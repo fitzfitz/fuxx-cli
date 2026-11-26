@@ -460,6 +460,15 @@ pub enum LaneEnd {
     Stopped,
 }
 
+/// How a background shell ended (chore 16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellEnd {
+    Done,
+    Failed,
+    /// Stopped (by ■, or the agent's own stop).
+    Stopped,
+}
+
 /// One piece of a resumed conversation's history: something you said (with its id in the
 /// agent's record, when it has one: batch 3, chore 2), or an event of the agent's.
 #[derive(Clone, Debug, PartialEq)]
@@ -622,6 +631,22 @@ pub enum Event {
     PassedOn {
         call: String,
         lane: String,
+    },
+    /// A background shell started (chore 16: Claude's `run_in_background` Bash): `id` its
+    /// task's (what `Action::StopShell` names), `call` the tool call that started it, the
+    /// agent's `description`, the `command`, and the file its output goes to, when said.
+    ShellStarted {
+        id: String,
+        call: String,
+        description: String,
+        command: String,
+        output: Option<PathBuf>,
+    },
+    /// Background shell `id` ended (`output`: its file, when said).
+    ShellEnded {
+        id: String,
+        end: ShellEnd,
+        output: Option<PathBuf>,
     },
     /// The agent read one of your messages (Claude's `--replay-user-messages` echo): in the
     /// turn running, or starting its own. `id`: the message's (`Action::Send`'s), when it says.
@@ -879,6 +904,11 @@ pub enum Action {
     /// Stop subagent `lane` alone (a lane whose `controls.stop` is on).
     StopSubagent {
         lane: String,
+    },
+    /// Stop background shell `id` (an `Event::ShellStarted`'s; chore 16). A provider with no
+    /// shells writes nothing.
+    StopShell {
+        id: String,
     },
     /// Your `text` for subagent `lane` (called `label`), sent to Main to pass on word for word
     /// (a provider that `relays_to_subagents`; the lanes chore): a message to Main in every

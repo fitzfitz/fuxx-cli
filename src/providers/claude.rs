@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 mod activity;
+mod shells;
 
 pub struct Claude;
 pub static CLAUDE: Claude = Claude;
@@ -953,6 +954,8 @@ struct ClaudeTranslator {
     /// Each lane by the names SendMessage may give it (`to`: its agent id is its task id, in
     /// `lanes`; else its name).
     names: HashMap<String, String>,
+    /// Background shells (chore 16).
+    shells: shells::Shells,
 }
 
 /// Claude's own subagent types: a description names one of these better than its type does.
@@ -1710,6 +1713,7 @@ impl ClaudeTranslator {
                                 input["to"].as_str().and_then(|to| self.lane_named(to))
                             })
                             .flatten();
+                        self.shells.call(&id, &name, input);
                         let (planned, call) = activity::call_started(&name, input);
                         self.calls.insert(id.clone(), call);
                         out.push(Event::ToolStarted {
@@ -1750,12 +1754,14 @@ impl ClaudeTranslator {
                 let not_run = self.denied.remove(&id);
                 activity::call_finished(call, ok, &text, not_run)
             });
+            let shell = self.shells.result(&id, &text);
             out.push(Event::ToolFinished {
                 id: id.clone(),
                 ok,
                 summary: short(&text, 60),
                 output: (!text.is_empty()).then_some(text),
             });
+            out.extend(shell);
             if let Some(activity) = done {
                 out.push(Event::Activity { id, activity });
             }
@@ -1847,6 +1853,8 @@ impl ClaudeTranslator {
                 }],
                 None => Vec::new(),
             },
+            // Chore 16: a background shell, held until its call's result names its file.
+            Some("task_started") if self.shells.started(v) => Vec::new(),
             Some("task_notification") => match s(&v["task_id"]).and_then(|t| self.lanes.get(&t)) {
                 Some(lane) => {
                     self.foreground.remove(lane);
@@ -1862,7 +1870,7 @@ impl ClaudeTranslator {
                         end,
                     }]
                 }
-                None => Vec::new(),
+                None => self.shells.ended(v),
             },
             Some("permission_denied") => s(&v["message"])
                 .or_else(|| s(&v["tool_name"]).map(|t| format!("{t} was denied")))
@@ -2050,15 +2058,19 @@ impl Translator for ClaudeTranslator {
             Some("control_response") if is_init_answer(&v) => {
                 vec![Event::Catalog(catalog_of(&v["response"]["response"]))]
             }
-            // A refused stop of one subagent (M11ar): said, not swallowed.
+            // A refused stop of one subagent (M11ar) or a shell (chore 16): said, not swallowed.
             Some("control_response")
                 if v["response"]["request_id"]
                     .as_str()
                     .is_some_and(|r| r.starts_with("fuxx-stop-")) =>
             {
+                let what = match v["response"]["request_id"].as_str() {
+                    Some(r) if r.starts_with(shells::STOP_PREFIX) => "shell",
+                    _ => "subagent",
+                };
                 match v["response"]["subtype"].as_str() {
                     Some("error") => vec![Event::Notice(format!(
-                        "Couldn't stop the subagent: {}",
+                        "Couldn't stop the {what}: {}",
                         s(&v["response"]["error"]).unwrap_or_else(|| "no reason given".into())
                     ))],
                     _ => Vec::new(),
@@ -2128,6 +2140,12 @@ impl Translator for ClaudeTranslator {
                 ],
                 None => Vec::new(),
             },
+            // A background shell (chore 16): the same `stop_task`, by its task id.
+            Action::StopShell { id } => vec![
+                json!({"type": "control_request", "request_id": shells::stop_request(id),
+                "request": {"subtype": "stop_task", "task_id": id}})
+                .to_string(),
+            ],
             Action::Send { text, images, id } => vec![user_line(text, images, id.as_deref())],
             // The lanes chore: a message to Main, framed; the lane's agent id is its task's.
             Action::Relay {

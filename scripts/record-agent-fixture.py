@@ -349,7 +349,7 @@ SCENARIOS = {
     "claude": {"text", "tools", "permission-allow", "permission-deny", "permission-always", "interrupt",
                "interrupt-text", "queue", "resume", "slash", "bad-resume",
                "initialize", "set-model", "set-effort", "set-mode", "image", "move",
-               "subagents", "subagent-stop", "subagent-ask"},
+               "subagents", "subagent-stop", "subagent-ask", "background-shells"},
     "agy": {"text", "tools", "resume", "bad-resume", "restart-flags", "move", "image", "subagents"},
 }
 TOOL_PROMPT = ("Do these four things in order, using the matching tools: 1) Read the file notes.txt "
@@ -372,6 +372,10 @@ AGY_SUBAGENTS = ("Start two flash subagents in parallel: the first reads a.txt a
                  "the second reads b.txt and reports what it says. Then tell me both in one line.")
 SUBAGENT_STOP = ("Use the Agent tool once: the subagent runs `python3 -c 'import time; time.sleep(60)'` "
                  "with the Bash tool in the foreground, then reports. Then say done.")
+# Chore 16 (note 93): background shells, one that finishes and one stopped by `stop_task`.
+BACKGROUND = ("Start two shells with the Bash tool, each with run_in_background set to true, in one message: "
+              "the first runs `for i in 1 2 3; do echo step $i; sleep 3; done`, the second runs "
+              "`python3 -c 'import time; time.sleep(120)'`. Do not wait for them; say started.")
 SUBAGENT_ASK = ("Use the Agent tool once: the subagent creates a file named hello.txt containing the word "
                 "hi, using the Write tool, then reports. Then say done.")
 
@@ -397,6 +401,23 @@ def play(r, scenario):
         r.send({"type": "control_request", "request_id": "fuxx-stop-task",
                 "request": {"subtype": "stop_task", "task_id": started["task_id"]}})
         r.expect_result(120)
+    elif scenario == "background-shells":
+        r.send(user(BACKGROUND))
+        shells = []
+        while len(shells) < 2:
+            e = r.pump(lambda e: e.get("type") == "system" and e.get("subtype") == "task_started"
+                       and e.get("task_type") == "local_bash")
+            if e is None:
+                raise RuntimeError("the background shells never started")
+            shells.append(e)
+        r.expect_result()
+        # The short one ends by itself; then stop the long one as fuxx's ■ does.
+        r.pump(lambda e: e.get("subtype") == "task_notification", 60)
+        for s in shells:
+            r.send({"type": "control_request", "request_id": "fuxx-stop-" + s["task_id"],
+                    "request": {"subtype": "stop_task", "task_id": s["task_id"]}})
+        r.pump(lambda e: e.get("subtype") == "task_notification", 30)
+        r.pump(None, 20)  # a wake turn the notifications may start
     elif scenario in ("text", "bad-resume"):
         r.send(user("Say hello in one word"))
         r.result()
