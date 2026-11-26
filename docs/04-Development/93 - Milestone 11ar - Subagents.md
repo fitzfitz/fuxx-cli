@@ -1806,18 +1806,49 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     beside and below a page, not `../`; the badge's ring shows as a halo on a hovered clock or gauge; Force stop's
     square isn't pinned apart from Stop's on dark themes; a failed subagent counts as done (green, "N of N subagents
     done").
-- **Chore 36 (queued, not built): the files and checks popovers look like the corner ones** (your words,
-  2026-11-26, with two pictures of the status line's `N changed` and `checks` popovers: "I don't like how these 2
-  presented. the fonts the gaps, the sizes on the subagent, shell, tasks popover is cooler." → my take → "cool! love
-  your suggestions"). (1) One popover look for all five (files, checks, subagents, shells, tasks): the corner
-  popovers' frame, fonts, sizes and gaps — a small header line with its count on the right, compact rows, mono only
-  for commands and paths, the same status marks (○ running, ✓, ✕) — as one shared piece (it also settles chore 19's
-  deferred "the subagents and shells popovers repeat one frame shape"). (2) The files list groups each folder once,
-  sorted (the picture showed `src` twice, split by `src/browser`). (3) Files outside the project (an agent's logs in
-  /tmp) don't count toward `N changed`; they show dimmed in an "Outside the project" group at the bottom. (4) The
-  checks rows: one mark per row, no "ran" beside an empty circle. (5) The plan tab marks the task being built (added
-  2026-11-26, with a picture of chores 33–35's plan: Task 3 ◐ because its first check was ticked early, Task 2 ○
-  though its files were changing: "is this normal?" → "yes, add it to chore 36"): a task is ◐ while uncommitted
-  changes touch the files its `**Files:**` block names; a task with only some steps ticked and none of its files
-  changing is ○. Build after chores 33–35 (same box code); pin it in the ledger and corner popover scenes, and a
-  plan_progress test for (5).
+- **Chore 36: the files and checks popovers look like the corner ones** (your words, 2026-11-26, with two pictures
+  of the status line's `N changed` and `checks` popovers: "I don't like how these 2 presented. the fonts the gaps,
+  the sizes on the subagent, shell, tasks popover is cooler." → my take → "cool! love your suggestions"; (5) added
+  with a picture of chores 33–35's plan: "is this normal?" → "yes, add it to chore 36"). **Causes:** (2) the files
+  popover grouped the files the turn changed, those a script touched and those it only read each on its own, so a
+  folder came back once per kind: your `src` after `src/browser` held `agent_box.rs`, which a script had edited (a
+  test from your picture reproduced it; edit order and odd paths were ruled out). (4) Each checks row drew a mark
+  per run (`○○`, `✕✓`); a run whose exit a pipe hid (`cargo build … | tail`) has no verdict, drawn as an empty
+  circle *and* the fallback word "ran"; and "P/T passed" counted runs while the rows are scopes (`1/6` over four
+  rows). **Built:** (1) One look for all five popovers, `src/agent_popover.rs`: the frame, a small dim header with
+  its count on the right ("Subagents · 1 of 2 done · 1 running", "Shells", "Plan · 8 of 9", "Changed files · 3
+  +6 −3", "Checks · 1/4 passed"), 26 pt rows with a 14 pt mark cell, mono only for paths and commands, the marks ✓
+  ✕ ◐ ○ and – (no verdict). The subagents, shells and plan popovers draw through it (chore 19's deferred "one frame
+  shape" settled); the status line's popover moved out of `agent_box_menus.rs` into `src/agent_ledger_view.rs`. A
+  source test keeps the five from drawing their own frame or row height. (2) One grouping: each folder once,
+  sorted case-blind, the top first; a script's file says "script", one only read "read" (dim). (3) The project is
+  the tab's folder (and its real path, read off the UI thread): files outside it don't count toward `N changed`
+  (only outside files: no chip) and come last, dimmed, under "Outside the project", by their full folder; a click
+  opens the file. (4) A row shows its latest run's mark and words (`✓ 1 passed`, `– ran`, a dim ✕ for a planned
+  failure); the header counts scopes. (5) The plan tab reads the plan repo's `git status` with its commits (off the
+  UI thread, the plan file itself left out): a task not done is ◐ while those changes touch the files its
+  `**Files:**` block names (a file two unfinished tasks name is the earlier's), ○ otherwise, however many boxes
+  are ticked; with nothing changing, the one after the last done is ◐ as before. Pinned in `agent-ledger-files`
+  and `agent-ledger-checks` (new: your two pictures) and the corner popover scenes; tests
+  `the_picture_groups_src_once`, `files_outside_the_project_go_apart`, `the_checks_header_counts_the_rows`,
+  `a_checks_row_shows_its_latest_run`, `the_task_being_built_follows_its_files`. Commits `03c4eeb`, `4d13d30`,
+  `703f82f`, `4bf61eb`, `a77c253`, `6fc0bc2`, `e3c5d36`. Plan: `docs/superpowers/plans/2026-11-26-chore-36.md`.
+  - **Rulings:** script and read files sit in the changed files' folders (dim, with their word) instead of their
+    own sub-lists, since "each folder once" needs one grouping; "the project" is the tab's folder, so a tab in a
+    repo's subfolder counts the rest of the repo as outside; a no-verdict check shows `– ran` (an empty circle
+    means "next" in the shared marks) and counts against "P/T passed"; two unfinished tasks whose own files both
+    change are both ◐; a done task's file changing marks a later unfinished task that names it ◐.
+  - **Review** (one whole-change review on Opus): 1 Important, fixed with a test first: with a symlinked tab
+    folder and an agent writing the real path, every edit went "outside" and the chip vanished (now the folder's
+    real path counts too). Deferred minors: a folder's count includes its read and script rows; the plan's `git
+    status` runs repo-wide on each ledger change; file names sort case-sensitively (folders case-blind); the
+    ledger rows hover with another ink than the corner rows; a failing checks row's ✕ and words use two reds; no
+    temp-repo test pins `uncommitted`'s real-path compare.
+  - **Checks:** tests 3043 green; no clippy warnings in the files touched (both runs); `cargo fmt --check` clean.
+    Scenes since `82d82d5` (all, as `agent_tab.rs` changed): 392 passed, 1 failed (`agent-tab-wide`,
+    display-dependent, as on master); the serial part ran through this time. The five popovers' PNGs looked at in
+    both themes. The visual fingerprints (`tests/ui-shots-ref`) were not refreshed.
+  - [ ] Your check: `N changed` and `checks` open popovers that look like the 🤖/▣/☰ ones (header and count on one
+    line, compact rows, mono paths); a folder shows once; an agent's /tmp log sits dimmed at the bottom and isn't
+    counted; a check run twice shows one mark; on the next plan built here, the ☰ popover's ◐ is the task whose
+    files are being changed.

@@ -44,6 +44,21 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — Chore 36: the files and checks popovers look like the corner ones
+
+- **What:** your words: "the fonts the gaps, the sizes on the subagent, shell, tasks popover is cooler" (the
+  status line's files and checks popovers) and "yes, add it to chore 36" (the plan tab's ◐). One shared look for
+  all five popovers (`agent_popover`: header with its count on the right, 26 pt rows, one mark cell, mono for paths
+  and commands); the files list groups each folder once (cause: changed, scripted and read files were grouped
+  apart, so `src` came back for a script-edited file), files outside the tab's folder don't count and sit dimmed at
+  the bottom; a checks row shows one mark and "P/T passed" counts rows (cause: a mark per run, an empty circle plus
+  "ran" for a piped check, runs counted); the plan tab's ◐ follows the uncommitted changes to a task's `**Files:**`.
+  Commits `03c4eeb`, `4d13d30`, `703f82f`, `4bf61eb`, `a77c253`, `6fc0bc2`, `e3c5d36`.
+- **Checks:** tests 3043 green, clippy (both runs) clean in the files touched, fmt clean; scenes since `82d82d5`
+  392 passed, 1 failed (`agent-tab-wide`, as on master). One review on Opus: 1 Important fixed (a symlinked tab
+  folder put every edit "outside"); six minors deferred (note 93).
+- **Next:** your on-screen check (note 93, chore 36); not pushed.
+
 ### 2026-11-26 — Chores 33–35: a solid Stop, finished tabs as icons, local pages in fuxx's browser
 
 - **What:** your words: "queue 33 and 34 and build" (the mockup of the agent box's states) and "why is it opened in
