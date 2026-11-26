@@ -1774,5 +1774,9 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   deferred "the subagents and shells popovers repeat one frame shape"). (2) The files list groups each folder once,
   sorted (the picture showed `src` twice, split by `src/browser`). (3) Files outside the project (an agent's logs in
   /tmp) don't count toward `N changed`; they show dimmed in an "Outside the project" group at the bottom. (4) The
-  checks rows: one mark per row, no "ran" beside an empty circle. Build after chores 33–35 (same box code); pin it in
-  the ledger and corner popover scenes.
+  checks rows: one mark per row, no "ran" beside an empty circle. (5) The plan tab marks the task being built (added
+  2026-11-26, with a picture of chores 33–35's plan: Task 3 ◐ because its first check was ticked early, Task 2 ○
+  though its files were changing: "is this normal?" → "yes, add it to chore 36"): a task is ◐ while uncommitted
+  changes touch the files its `**Files:**` block names; a task with only some steps ticked and none of its files
+  changing is ○. Build after chores 33–35 (same box code); pin it in the ledger and corner popover scenes, and a
+  plan_progress test for (5).
