@@ -463,11 +463,23 @@ pub fn rereads_branch(event: &Event) -> bool {
     matches!(event, Event::ToolFinished { .. } | Event::TurnDone { .. })
 }
 
+/// A command as one line (chore 23): its first line with words, "…" after it when more lines
+/// follow; and whether there are more.
+pub fn command_line(what: &str) -> (String, bool) {
+    let mut lines = what.lines().map(str::trim).filter(|l| !l.is_empty());
+    let first = lines.next().unwrap_or("").to_string();
+    if lines.next().is_some() {
+        (format!("{first} \u{2026}"), true)
+    } else {
+        (first, false)
+    }
+}
+
 /// An answered plan card's line (the 2026-11-25 chores).
 pub fn plan_answer_line(answer: &Answer) -> String {
     match answer {
-        Answer::AlwaysAllowed => "Approved \u{b7} auto-accept edits \u{2713}".into(),
-        Answer::Allowed => "Approved \u{2713}".into(),
+        Answer::AlwaysAllowed => "Plan approved \u{b7} auto-accept edits \u{2713}".into(),
+        Answer::Allowed => "Plan approved \u{2713}".into(),
         Answer::Denied(Some(note)) => format!("Kept planning: {note}"),
         Answer::Denied(None) => "Kept planning".into(),
         other => answer_line(other),
@@ -1614,6 +1626,11 @@ pub struct AgentTab {
     /// The plan cards opened whole (Show the whole plan), by their request's id (the
     /// 2026-11-25 chores).
     plan_open: std::collections::HashSet<String>,
+    /// Answered plans opened again for reading (chore 23: once answered a plan folds to one
+    /// line, open or not).
+    plan_reopened: std::collections::HashSet<String>,
+    /// Answered permissions whose long command is opened whole (chore 23).
+    command_open: std::collections::HashSet<String>,
     /// Keep planning… was pressed: the waiting plan's buttons step aside for your note.
     plan_note: bool,
     /// The waiting plan's footer, where it was last painted (the pinned bar's cue).
@@ -2396,6 +2413,8 @@ impl AgentTab {
             branch_read_at: None,
             branch_read_queued: false,
             plan_open: Default::default(),
+            plan_reopened: Default::default(),
+            command_open: Default::default(),
             plan_note: false,
             plan_footer: Rc::default(),
             plan_frame: Cell::new(0),
@@ -7206,14 +7225,30 @@ mod tests {
         }));
     }
 
-    /// The 2026-11-25 chores: an answered plan says how it went.
+    /// Chore 23: an answered permission's line keeps a long command's first line, "…" after it
+    /// when there is more (its rows spilled over the chat's).
+    #[test]
+    fn a_long_command_shows_its_first_line() {
+        assert_eq!(
+            command_line("cargo test"),
+            ("cargo test".to_string(), false)
+        );
+        assert_eq!(
+            command_line("cat > a.sh <<'EOF'\nset -e\nEOF"),
+            ("cat > a.sh <<'EOF' \u{2026}".to_string(), true)
+        );
+        assert_eq!(command_line("  \n  ls\n"), ("ls".to_string(), false));
+    }
+
+    /// The 2026-11-25 chores: an answered plan says how it went (chore 23: on its one line,
+    /// "Plan approved · auto-accept edits ✓").
     #[test]
     fn a_plan_answer_says_how_it_went() {
         assert_eq!(
             plan_answer_line(&Answer::AlwaysAllowed),
-            "Approved \u{b7} auto-accept edits \u{2713}"
+            "Plan approved \u{b7} auto-accept edits \u{2713}"
         );
-        assert_eq!(plan_answer_line(&Answer::Allowed), "Approved \u{2713}");
+        assert_eq!(plan_answer_line(&Answer::Allowed), "Plan approved \u{2713}");
         assert_eq!(
             plan_answer_line(&Answer::Denied(Some("split it".into()))),
             "Kept planning: split it"

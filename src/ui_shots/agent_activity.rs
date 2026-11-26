@@ -93,6 +93,11 @@ pub(super) const SCENES: &[Scene] = &[
     scene("agent-plan-waiting", agent_plan_waiting, PLAN_CARD),
     scene("agent-plan-reading", agent_plan_reading, PLAN_CARD),
     scene("agent-plan-approved", agent_plan_approved, PLAN_CARD),
+    scene(
+        "agent-plan-long-command",
+        agent_plan_long_command,
+        PLAN_CARD,
+    ),
 ];
 
 /// The Plan card's scenes (the landing page's "Plan first, then build"): the card and its rules.
@@ -1117,6 +1122,37 @@ pub(super) fn agent_plan_waiting() {
     shoot("agent-plan-waiting", DIMS, |n, cx, window, tab, _| {
         to_plan(cx, tab, false);
         let _ = frame_fresh(cx, window);
+        // Chore 23: one header line (☰ Claude's plan · its file · its steps), no 16 pt title,
+        // the three answers in one row of 24 pt buttons, 12 pt in from the card's side.
+        let header = part(cx, tab, n, "plan-header");
+        assert!(
+            header.size.height <= px(24.),
+            "{n}: one header line ({header:?})"
+        );
+        let _ = part(cx, tab, n, "plan-header-steps");
+        assert!(
+            !cx.read(|cx| tab.read(cx).shot_part_now("plan-title")),
+            "{n}: no title line"
+        );
+        let buttons = part(cx, tab, n, "plan-buttons");
+        let approve = part(cx, tab, n, "plan-approve-auto");
+        let card = part(cx, tab, n, "plan-card");
+        assert!(buttons.size.height <= px(25.), "{n}: one row ({buttons:?})");
+        // (The probe sits inside the button's 1 pt edge.)
+        assert!(
+            (approve.size.height + px(2.) - px(24.)).abs() < px(0.5),
+            "{n}: 24 pt buttons ({approve:?})"
+        );
+        let inset = f32::from(buttons.left() - card.left());
+        assert!((inset - 12.).abs() <= 0.5, "{n}: 12 pt padding ({inset})");
+        // Its buttons in view: no pill over the box.
+        super::chrome::settle_frames(cx, window);
+        cx.read(|cx| tab.read(cx).shot_forget(&["plan-pill"]));
+        let _ = frame_fresh(cx, window);
+        assert!(
+            !cx.read(|cx| tab.read(cx).shot_part_now("plan-pill")),
+            "{n}: no pill while the buttons show"
+        );
         cx.read(|cx| {
             let t = tab.read(cx);
             assert_eq!(
@@ -1138,6 +1174,19 @@ pub(super) fn agent_plan_reading() {
         assert!(
             cx.read(|cx| tab.read(cx).shot_plan_bar()),
             "{n}: the answer bar pinned over the box"
+        );
+        // Chore 23: a slim pill on the box's top edge, not the big floating bar.
+        let _ = frame_fresh(cx, window);
+        let pill = part(cx, tab, n, "plan-pill");
+        let outer = part(cx, tab, n, "outer");
+        assert!(pill.size.height <= px(28.), "{n}: slim ({pill:?})");
+        assert!(
+            pill.size.width <= px(480.),
+            "{n}: a pill, not the column ({pill:?})"
+        );
+        assert!(
+            pill.bottom() <= outer.top() && pill.bottom() >= outer.top() - px(80.),
+            "{n}: on the box's top edge ({pill:?} vs {outer:?})"
         );
     });
 }
@@ -1189,5 +1238,133 @@ pub(super) fn agent_plan_approved() {
                 "{n}: approved"
             );
         });
+        // Chore 23: one line, "Show plan ›" on it; opened, the plan reads only — no answers, no
+        // Show less under it (only at its top).
+        let line = part(cx, tab, n, "plan-answered");
+        assert!(line.size.height <= px(40.), "{n}: one line ({line:?})");
+        click(cx, window, part(cx, tab, n, "plan-show"));
+        cx.read(|cx| {
+            tab.read(cx)
+                .shot_forget(&["plan-buttons", "plan-more", "plan-less-top", "plan-body"])
+        });
+        let _ = frame_fresh(cx, window);
+        let drawn =
+            |cx: &VisualTestAppContext, name: &str| cx.read(|cx| tab.read(cx).shot_part_now(name));
+        assert!(drawn(cx, "plan-body"), "{n}: opened");
+        assert!(drawn(cx, "plan-less-top"), "{n}: Show less at its top");
+        assert!(
+            !drawn(cx, "plan-buttons") && !drawn(cx, "plan-more"),
+            "{n}: read only, nothing under it"
+        );
+    });
+}
+
+/// Chore 23 (rows painted over each other after a plan was approved): a long plan, opened,
+/// approved (it folds to one line); then Claude asks to run a multi-line Bash command and you
+/// allow it: its answered line shows the command's first line with "…", inside its row; a
+/// click opens it whole, the rows after it moving down.
+pub(super) fn agent_plan_long_command() {
+    shoot("agent-plan-long-command", DIMS, |n, cx, window, tab, _| {
+        to_plan(cx, tab, true);
+        let _ = frame_fresh(cx, window);
+        feed(cx, tab, |t, cx| t.shot_open_plan(cx));
+        let _ = frame_fresh(cx, window);
+        feed(cx, tab, |t, cx| {
+            t.answer(crate::agent_conversation::Answer::AlwaysAllowed, cx)
+                .ok();
+        });
+        let mut events = vec![Event::Mode("acceptEdits".into())];
+        let after_plan = Turn {
+            lines: Vec::new(),
+            n: 10,
+        };
+        events.extend(
+            after_plan
+                .say("Approved. Checking the retry tests first.")
+                .events(),
+        );
+        events.push(Event::Permission {
+            id: "perm-long".into(),
+            tool: "Bash".into(),
+            what: "cat > /tmp/fx/retry_check.sh <<'EOF'\nset -e\ncargo test retry -- --nocapture\ncargo test client::current\necho done\nEOF".into(),
+            detail: String::new(),
+            always: None,
+            by: None,
+            plan: None,
+        });
+        give(cx, tab, events);
+        let _ = frame_fresh(cx, window);
+        feed(cx, tab, |t, cx| {
+            t.answer(crate::agent_conversation::Answer::Allowed, cx)
+                .ok();
+        });
+        give(
+            cx,
+            tab,
+            Turn {
+                lines: Vec::new(),
+                n: 20,
+            }
+            .say("The checks are in place.")
+            .events(),
+        );
+        // Scrolled down with the wheel, as you would, to the end.
+        for _ in 0..4 {
+            let at = gpui::point(px(550.), px(300.));
+            cx.simulate_mouse_move(window, at, None, Modifiers::none());
+            cx.simulate_event(
+                window,
+                gpui::ScrollWheelEvent {
+                    position: at,
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-400.))),
+                    modifiers: Modifiers::none(),
+                    touch_phase: gpui::TouchPhase::Moved,
+                },
+            );
+            let _ = frame_fresh(cx, window);
+        }
+        let _ = frame_fresh(cx, window);
+        let _ = frame_fresh(cx, window);
+        // The card folded to one line once answered, though it was open (chore 23).
+        let line = part(cx, tab, n, "plan-answered");
+        assert!(
+            line.size.height <= px(40.),
+            "{n}: the answered plan on one line ({line:?})"
+        );
+        // The long command on one line, inside its row: nothing spills over the rows round it.
+        let row = part(cx, tab, n, "permission-answer");
+        let text = part(cx, tab, n, "permission-answer-text");
+        assert!(
+            text.top() >= row.top() - px(0.5) && text.bottom() <= row.bottom() + px(0.5),
+            "{n}: the command inside its row ({text:?} in {row:?})"
+        );
+        // Opened, the row grows to hold the whole command, and the next row starts below it.
+        click(cx, window, row);
+        let _ = frame_fresh(cx, window);
+        let _ = frame_fresh(cx, window);
+        let row = part(cx, tab, n, "permission-answer");
+        let text = part(cx, tab, n, "permission-answer-text");
+        assert!(
+            row.size.height > px(60.),
+            "{n}: opened, the whole command ({row:?})"
+        );
+        assert!(
+            text.bottom() <= row.bottom() + px(0.5),
+            "{n}: still inside its row ({text:?} in {row:?})"
+        );
+        let list = cx.read(|cx| tab.read(cx).shot_list());
+        let k = (0..list.item_count())
+            .find(|&k| {
+                list.bounds_for_item(k)
+                    .is_some_and(|b| b.top() <= row.center().y && b.bottom() > row.center().y)
+            })
+            .unwrap_or_else(|| panic!("{n}: its list row"));
+        let next = list
+            .bounds_for_item(k + 1)
+            .unwrap_or_else(|| panic!("{n}: the row after it"));
+        assert!(
+            next.top() >= row.bottom() - px(0.5),
+            "{n}: the next row below it"
+        );
     });
 }

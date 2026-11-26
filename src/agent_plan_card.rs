@@ -1,7 +1,8 @@
 //! The Plan card (the 2026-11-25 chores: "We haven't handled agent 'Plan Mode' draft. We cannot
 //! read it"; mockup A, refined on the fuxx-look mockup): the plan an agent asks you to approve,
 //! rendered as the chat renders replies, folded when long, with its three answers; one quiet line
-//! once answered; and, while its buttons are scrolled out of view, a slim bar over the box.
+//! once answered; and, while its buttons are scrolled out of view, a slim pill over the box
+//! (chore 23: smaller and tighter).
 
 use gpui::{
     AnyElement, Context, FontWeight, InteractiveElement, IntoElement, ListState, ParentElement,
@@ -72,10 +73,14 @@ pub const FOLD_LINES: usize = 12;
 /// A folded plan's height: `FOLD_LINES` lines of the chat's text.
 const FOLD_H: f32 = FOLD_LINES as f32 * chat::BODY * chat::BODY_LINE;
 
+/// The card's padding (chore 23: "don't make too much spaces").
+const PAD: f32 = 12.0;
+
 impl AgentTab {
-    /// Plan `ix`'s card (`id`: its request's), drawn from row `k`: waiting, its buttons (or,
-    /// while you write a note, what Enter does); answered or expired, one line, opening for
-    /// reading.
+    /// Plan `ix`'s card (`id`: its request's), drawn from row `k` (chore 23: the chat's text
+    /// size, 12 pt in, one header line): waiting, its answers in one row (or, while you write a
+    /// note, what Enter does); answered or expired, one line — folded even if it was open —
+    /// that opens it again to read only.
     pub(super) fn plan_card(
         &self,
         k: usize,
@@ -86,84 +91,77 @@ impl AgentTab {
         look: &Look,
     ) -> AnyElement {
         let c = &look.c;
-        let open = self.plan_open.contains(id);
         let label = look.label.clone();
         let blocks = self.blocks_at(k, ix).unwrap_or_default();
+        let steps = plan_steps(&blocks);
         let toggle = {
             let id = id.to_string();
             on_tab(&look.view, move |this, cx| {
                 this.toggle_plan_card(&id, ix, cx)
             })
         };
+        let meta = crate::ui_tokens::text::META;
         // Answered, and not opened again: one line.
-        if let (Some(answer), false) = (answer, open) {
+        let reopened = self.plan_reopened.contains(id);
+        if let (Some(answer), false) = (answer, reopened) {
             let approved = matches!(answer, Answer::Allowed | Answer::AlwaysAllowed);
-            let steps = plan_steps(&blocks);
-            return div()
+            let el = div()
                 .id(SharedString::from(format!("plan-answered-{ix}")))
                 .w_full()
-                .px(px(14.))
-                .py(px(9.))
+                .px(px(PAD))
+                .py(px(7.))
                 .rounded(px(chat::R_GROUP))
                 .border_1()
                 .border_color(hsla(c.panel_border))
                 .bg(hsla(c.panel))
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(8.))
+                .text_size(px(meta))
                 .cursor_pointer()
                 .hover(|d| d.bg(hsla(c.panel_hover)))
                 .on_click(toggle)
-                .child(icon(Icon::Menu, px(14.), hsla(c.accent)))
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .truncate()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(hsla(c.text))
-                        .child(SharedString::from(plan.title.clone())),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(px(crate::ui_tokens::text::META))
-                        .text_color(hsla(c.dim))
-                        .child(SharedString::from(if steps > 0 {
-                            format!("{steps} steps \u{b7} \u{25b8} show")
-                        } else {
-                            "\u{25b8} show".to_string()
-                        })),
-                )
-                .child(div().flex_1())
+                .child(icon(Icon::Menu, px(13.), hsla(c.accent)))
                 .child(
                     // A long note is cut, never past the card (the review's Minor 6).
                     self.marked("plan-answer-line", div())
                         .flex_shrink(1.0)
                         .min_w(px(0.))
                         .truncate()
-                        .text_size(px(crate::ui_tokens::text::META))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(hsla(if approved { c.tool_ok } else { c.dim }))
                         .child(SharedString::from(super::plan_answer_line(answer))),
                 )
-                .into_any_element();
+                .child(div().flex_1())
+                .child(
+                    self.marked("plan-show", div())
+                        .flex_none()
+                        .text_color(hsla(c.dim))
+                        .child("Show plan \u{203a}"),
+                );
+            return self.marked("plan-answered", el).into_any_element();
         }
         let waiting = answer.is_none();
+        // Opened again after its answer, it reads only: whole, no answers under it.
+        let open = !waiting || self.plan_open.contains(id);
         // Only the oldest waiting ask answers (the review's Important 3): a later plan waits.
         let live = waiting && plan_live(self.waiting_plan(), ix);
         let long = plan_is_long(&plan.markdown);
         let folded = long && !open;
         let outline = plan_outline(&blocks);
-        let show = |words: &'static str, id: String| {
+        let link = |words: &'static str, id: String| {
             div()
                 .id(SharedString::from(id))
-                .text_size(px(crate::ui_tokens::text::META))
+                .flex_none()
+                .text_size(px(meta))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(hsla(c.accent))
                 .cursor_pointer()
                 .child(words)
         };
-        // The header: ☰ "<agent>'s plan", the file (↗ opens it), Show less while open.
+        let dot = || div().flex_none().text_color(hsla(c.dim)).child("\u{b7}");
+        // The header, one line: ☰ "<agent>'s plan" · the file (↗ opens it) · its steps, and
+        // Show less while open.
         let file = plan.file.clone().map(|path| {
             let name = path
                 .file_name()
@@ -172,20 +170,16 @@ impl AgentTab {
             let view = look.view.clone();
             div()
                 .id(SharedString::from(format!("plan-file-{ix}")))
-                .flex_none()
+                .flex_shrink(1.)
+                .min_w(px(0.))
                 .flex()
                 .items_center()
-                .gap(px(5.))
-                .px(px(8.))
-                .py(px(2.))
-                .rounded(px(6.))
-                .bg(hsla(c.chip_fill))
-                .text_size(px(crate::ui_tokens::text::META))
+                .gap(px(4.))
                 .text_color(hsla(c.dim))
                 .cursor_pointer()
                 .hover(|d| d.text_color(hsla(c.text)))
-                .child(SharedString::from(name))
-                .child(icon(Icon::OpenExternal, px(12.), hsla(c.dim)))
+                .child(div().truncate().child(SharedString::from(name)))
+                .child(icon(Icon::OpenExternal, px(11.), hsla(c.dim)))
                 .on_click(move |_, _, cx| {
                     view.update(cx, |_, cx| {
                         cx.emit(super::AgentTabEvent::OpenFile(path.clone()))
@@ -193,34 +187,53 @@ impl AgentTab {
                     .ok();
                 })
         });
-        let header = div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .px(px(16.))
-            .pt(px(12.))
-            .child(icon(Icon::Menu, px(14.), hsla(c.accent)))
-            .child(
+        let steps_el = (steps > 0).then(|| {
+            self.marked(
+                "plan-header-steps",
                 div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(hsla(c.accent))
-                    .child(SharedString::from(format!("{label}'s plan"))),
+                    .flex_none()
+                    .text_color(hsla(c.dim))
+                    .child(SharedString::from(match steps {
+                        1 => "1 step".to_string(),
+                        n => format!("{n} steps"),
+                    })),
             )
-            .child(div().flex_1())
-            .children(file)
-            .when(long && open, |d| {
-                d.child(
-                    show("Show less \u{25b4}", format!("plan-less-top-{ix}"))
-                        .on_click(toggle_clone(&look.view, id, ix)),
+        });
+        let header = self.marked(
+            "plan-header",
+            div()
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(PAD))
+                .mt(px(8.))
+                .text_size(px(meta))
+                .child(icon(Icon::Menu, px(13.), hsla(c.accent)))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(hsla(c.accent))
+                        .child(SharedString::from(format!("{label}'s plan"))),
                 )
-            });
-        let title = div()
-            .px(px(16.))
-            .pt(px(4.))
-            .text_size(px(16.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(hsla(c.text))
-            .child(SharedString::from(plan.title.clone()));
+                .when(file.is_some(), |d| d.child(dot()))
+                .children(file)
+                .when(steps_el.is_some(), |d| d.child(dot()))
+                .children(steps_el)
+                .child(div().flex_1())
+                // Opened again after its answer, Show less (back to its line) whatever its
+                // length.
+                .when((long && open) || reopened, |d| {
+                    d.child(
+                        self.marked(
+                            "plan-less-top",
+                            link("Show less \u{25b4}", format!("plan-less-top-{ix}"))
+                                .on_click(toggle_clone(&look.view, id, ix)),
+                        ),
+                    )
+                }),
+        );
         // Its parts, on a long plan opened: a click scrolls to one (where it falls in the plan).
         let chips = (open && outline.len() >= 3).then(|| {
             let parts: Vec<(usize, String)> = blocks
@@ -236,17 +249,17 @@ impl AgentTab {
                 .flex()
                 .flex_wrap()
                 .gap(px(6.))
-                .px(px(16.))
-                .pt(px(8.))
+                .px(px(PAD))
+                .pt(px(6.))
                 .children(parts.into_iter().map(|(i, part)| {
                     let at = i as f32 / total as f32;
                     div()
                         .id(SharedString::from(format!("plan-part-{ix}-{i}")))
-                        .px(px(9.))
-                        .py(px(2.))
+                        .px(px(8.))
+                        .py(px(1.))
                         .rounded_full()
                         .bg(hsla(c.chip_fill))
-                        .text_size(px(crate::ui_tokens::text::META))
+                        .text_size(px(meta))
                         .text_color(hsla(c.dim))
                         .cursor_pointer()
                         .hover(|d| d.text_color(hsla(c.text)))
@@ -258,92 +271,76 @@ impl AgentTab {
         });
         let column = crate::md_preview::column(&blocks, ix, &look.draw);
         let page_fill = hsla(c.panel);
-        let body = div()
-            .relative()
-            .px(px(16.))
-            .pt(px(4.))
-            .text_color(hsla(c.text))
-            .child(column)
-            .when(folded, |d| {
-                d.max_h(px(FOLD_H)).overflow_hidden().child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .h(px(64.))
-                        .bg(gpui::linear_gradient(
-                            180.,
-                            gpui::linear_color_stop(gpui::Hsla { a: 0., ..page_fill }, 0.),
-                            gpui::linear_color_stop(page_fill, 1.),
-                        )),
-                )
-            });
-        let more = long.then(|| {
-            div().px(px(16.)).pt(px(6.)).child(
-                show(
-                    if open {
-                        "Show less \u{25b4}"
-                    } else {
-                        "Show the whole plan \u{25be}"
-                    },
-                    format!("plan-more-{ix}"),
-                )
-                .on_click(toggle),
+        let body = self.marked(
+            "plan-body",
+            div()
+                .relative()
+                .px(px(PAD))
+                .pt(px(4.))
+                .pb(px(if waiting { 0. } else { PAD }))
+                .text_color(hsla(c.text))
+                .child(column)
+                .when(folded, |d| {
+                    d.max_h(px(FOLD_H)).overflow_hidden().child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(48.))
+                            .bg(gpui::linear_gradient(
+                                180.,
+                                gpui::linear_color_stop(gpui::Hsla { a: 0., ..page_fill }, 0.),
+                                gpui::linear_color_stop(page_fill, 1.),
+                            )),
+                    )
+                }),
+        );
+        let more = (waiting && long).then(|| {
+            div().px(px(PAD)).pt(px(4.)).child(
+                self.marked(
+                    "plan-more",
+                    link(
+                        if open {
+                            "Show less \u{25b4}"
+                        } else {
+                            "Show all \u{25be}"
+                        },
+                        format!("plan-more-{ix}"),
+                    )
+                    .on_click(toggle),
+                ),
             )
         });
-        // The footer: the answers while it waits (aside while you write a note), else how it
-        // went.
+        // The footer, while it waits: the answers (aside while you write a note).
         let noting = live && self.plan_noting(cx_free_text(self));
-        let footer = div()
-            .mt(px(10.))
-            .px(px(16.))
-            .pt(px(12.))
-            .pb(px(12.))
-            .border_t_1()
-            .border_color(hsla(c.panel_border))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .map(|d| match answer {
-                Some(answer) => d.child(
-                    div()
-                        .text_size(px(crate::ui_tokens::text::META))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(hsla(c.dim))
-                        .child(SharedString::from(super::plan_answer_line(answer))),
-                ),
-                None if noting => d.child(
-                    div()
-                        .text_size(px(crate::ui_tokens::text::META))
-                        .text_color(hsla(c.dim))
-                        .child(SharedString::from(format!(
+        let footer = waiting.then(|| {
+            let footer = div()
+                .mt(px(8.))
+                .px(px(PAD))
+                .py(px(PAD - 2.))
+                .border_t_1()
+                .border_color(hsla(c.panel_border))
+                .text_size(px(meta))
+                .text_color(hsla(c.dim))
+                .map(|d| {
+                    if noting {
+                        d.child(SharedString::from(format!(
                             "Your note goes back to {label}, and it keeps planning. Esc returns to the buttons."
-                        ))),
-                ),
-                None if !live => d.child(
-                    div()
-                        .text_size(px(crate::ui_tokens::text::META))
-                        .text_color(hsla(c.dim))
-                        .child("Next: answer the request before it first."),
-                ),
-                None => d
-                    .child(self.plan_buttons("plan", ix, look))
-                    .child(
-                        div()
-                            .text_size(px(crate::ui_tokens::text::META))
-                            .text_color(hsla(c.dim))
-                            .child(SharedString::from(format!(
-                                "Or type in the box below to tell {label} what to change in the plan."
-                            ))),
-                    ),
-            });
-        let footer = if live {
-            self.plan_footer_probe(footer)
-        } else {
-            footer
-        };
-        div()
+                        )))
+                    } else if !live {
+                        d.child("Next: answer the request before it first.")
+                    } else {
+                        d.child(self.marked("plan-buttons", self.plan_buttons("plan", ix, look)))
+                    }
+                });
+            if live {
+                self.plan_footer_probe(footer)
+            } else {
+                footer
+            }
+        });
+        let card = div()
             .id(SharedString::from(format!("plan-card-{ix}")))
             .w_full()
             .rounded(px(chat::R_CARD))
@@ -354,41 +351,39 @@ impl AgentTab {
             .flex()
             .flex_col()
             .child(header)
-            .child(title)
             .children(chips)
             .child(body)
             .children(more)
-            .child(footer)
-            .into_any_element()
+            .children(footer);
+        self.marked("plan-card", card).into_any_element()
     }
 
-    /// The three answers, for the card's footer and the pinned bar (`id` keeps them apart).
+    /// The three answers in one row of 24 pt buttons (chore 23), for the card's footer.
     fn plan_buttons(&self, id: &'static str, ix: usize, look: &Look) -> gpui::Div {
         let c = &look.c;
+        let slim = |b: gpui::Stateful<gpui::Div>| b.h(px(24.)).px(px(10.)).flex_none();
+        let approve = slim(button(
+            SharedString::from(format!("{id}-approve-auto")),
+            "Approve \u{b7} auto-accept  \u{23ce}",
+            true,
+            c,
+        ))
+        .on_click(on_tab(&look.view, move |this, cx| {
+            this.answer_plan(ix, Answer::AlwaysAllowed, cx);
+        }));
         div()
             .flex()
-            .flex_wrap()
             .items_center()
             .gap(px(6.))
-            .text_size(px(crate::ui_tokens::text::META + 0.5))
+            .text_size(px(crate::ui_tokens::text::META))
+            .child(self.marked("plan-approve-auto", approve))
             .child(
-                button(
-                    SharedString::from(format!("{id}-approve-auto")),
-                    "Approve \u{b7} auto-accept edits  \u{23ce}",
-                    true,
-                    c,
-                )
-                .on_click(on_tab(&look.view, move |this, cx| {
-                    this.answer_plan(ix, Answer::AlwaysAllowed, cx);
-                })),
-            )
-            .child(
-                button(
+                slim(button(
                     SharedString::from(format!("{id}-approve-each")),
-                    "Approve \u{b7} ask per edit",
+                    "Approve",
                     false,
                     c,
-                )
+                ))
                 .on_click(on_tab(&look.view, move |this, cx| {
                     this.answer_plan(ix, Answer::Allowed, cx);
                 })),
@@ -396,15 +391,15 @@ impl AgentTab {
             .child(
                 div()
                     .id(SharedString::from(format!("{id}-keep-planning")))
-                    .h(px(28.))
-                    .px(px(10.))
+                    .h(px(24.))
+                    .px(px(8.))
                     .flex()
                     .items_center()
                     .rounded(px(6.))
                     .text_color(hsla(c.dim))
                     .cursor_pointer()
                     .hover(|d| d.text_color(hsla(c.text)))
-                    .child("Keep planning\u{2026}")
+                    .child("Keep planning")
                     .on_click(on_tab(&look.view, |this, cx| this.keep_planning(cx))),
             )
     }
@@ -434,15 +429,30 @@ impl AgentTab {
     /// The waiting plan's row laid out again (its footer changed).
     pub(super) fn relayout_plan(&self) {
         if let Some(ix) = self.waiting_plan() {
-            for pane in self.panes.values() {
-                if let Ok(k) = pane.cache.order().binary_search(&ix) {
-                    let k = k + pane.head as usize;
-                    if k < pane.list.item_count() {
-                        pane.list.splice(k..k + 1, 1);
-                    }
+            self.relayout_row(ix);
+        }
+    }
+
+    /// Item `ix`'s row laid out again in every view showing it (its height changed).
+    pub(super) fn relayout_row(&self, ix: usize) {
+        for pane in self.panes.values() {
+            if let Ok(k) = pane.cache.order().binary_search(&ix) {
+                let k = k + pane.head as usize;
+                if k < pane.list.item_count() {
+                    pane.list.splice(k..k + 1, 1);
                 }
             }
         }
+    }
+
+    /// An answered permission's line clicked: its long command opens whole, or folds to its
+    /// first line (chore 23).
+    pub(super) fn toggle_command(&mut self, id: &str, ix: usize, cx: &mut Context<Self>) {
+        if !self.command_open.remove(id) {
+            self.command_open.insert(id.to_string());
+        }
+        self.relayout_row(ix);
+        cx.notify();
     }
 
     /// The oldest ask, when it is a plan still waiting.
@@ -463,9 +473,23 @@ impl AgentTab {
     /// its top where it was (you read on down; its buttons go below the view and the pinned
     /// bar takes them); folding brings its top back into view.
     fn toggle_plan_card(&mut self, id: &str, ix: usize, cx: &mut Context<Self>) {
-        let folding = self.plan_open.remove(id);
+        // A waiting plan opens whole or folds; an answered one opens again to read, or goes
+        // back to its line (chore 23).
+        let answered = matches!(
+            &self.conversation.items()[ix],
+            crate::agent_conversation::Item::Permission {
+                answer: Some(_),
+                ..
+            }
+        );
+        let set = if answered {
+            &mut self.plan_reopened
+        } else {
+            &mut self.plan_open
+        };
+        let folding = set.remove(id);
         if !folding {
-            self.plan_open.insert(id.to_string());
+            set.insert(id.to_string());
         }
         for pane in self.panes.values() {
             if let Ok(k) = pane.cache.order().binary_search(&ix) {
@@ -513,24 +537,23 @@ impl AgentTab {
                 move |bounds, _, _| seen.set(Some((bounds, frame))),
                 |_, _, _, _| {},
             )
+            // Pinned to the footer's corner: left to its own place, it sat under the buttons
+            // once the footer stopped being a flex column (chore 23), and the pill showed with
+            // the buttons in view.
             .absolute()
+            .top_0()
+            .left_0()
             .size_full(),
         )
     }
 
-    /// The slim answer bar pinned over the box while the waiting plan's footer is out of the
-    /// chat's view (the 2026-11-25 chores, "loved the idea"): ☰, its title, the three answers.
+    /// The slim answer pill pinned over the box while the waiting plan's footer is out of the
+    /// chat's view (the 2026-11-25 chores, "loved the idea"; chore 23: a pill, not a bar).
     pub(super) fn plan_bar(&mut self, look: &Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ix = self.waiting_plan()?;
         if self.plan_noting(self.box_text_nonempty.get()) {
             return None;
         }
-        let title = match &self.conversation.items()[ix] {
-            crate::agent_conversation::Item::Permission {
-                plan: Some(plan), ..
-            } => plan.title.clone(),
-            _ => return None,
-        };
         let list: ListState = self.pane().list.clone();
         let footer = self.plan_footer.clone();
         // Painted in the frame just drawn, inside the view (the review's Important 5): the
@@ -556,41 +579,67 @@ impl AgentTab {
         if !shown {
             return Some(layer.into_any_element());
         }
+        // Chore 23: one slim pill on the box's top edge, not the big floating bar:
+        // ☰ Plan waiting · Approve ⏎ · Keep planning.
         let c = &look.c;
-        let bar = div()
-            .w_full()
-            .max_w(px(chat::COLUMN_MAX))
+        let action = |id: &'static str, words: &'static str, ink| {
+            div()
+                .id(id)
+                .flex_none()
+                .h(px(22.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .rounded_full()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(hsla(ink))
+                .cursor_pointer()
+                .hover(move |d| d.bg(hsla(c.panel_hover)))
+                .child(words)
+        };
+        let dot = || div().flex_none().text_color(hsla(c.dim)).child("\u{b7}");
+        let pill = div()
+            .h(px(28.))
+            .pl(px(10.))
+            .pr(px(3.))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(12.))
-            .py(px(8.))
-            .rounded(px(chat::R_GROUP))
-            .border(px(1.5))
+            .gap(px(4.))
+            .rounded_full()
+            .border_1()
             .border_color(hsla(c.accent))
             .bg(hsla(c.panel))
-            .child(icon(Icon::Menu, px(14.), hsla(c.accent)))
+            .text_size(px(crate::ui_tokens::text::META))
+            .child(icon(Icon::Menu, px(13.), hsla(c.accent)))
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .truncate()
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .flex_none()
+                    .pl(px(2.))
                     .text_color(hsla(c.text))
-                    .child(SharedString::from(title)),
+                    .child("Plan waiting"),
             )
-            .child(self.plan_buttons("plan-bar", ix, look));
+            .child(dot())
+            .child(
+                action("plan-bar-approve-auto", "Approve \u{23ce}", c.accent)
+                    .on_click(on_tab(&look.view, move |this, cx| {
+                        this.answer_plan(ix, Answer::AlwaysAllowed, cx)
+                    })),
+            )
+            .child(dot())
+            .child(
+                action("plan-bar-keep-planning", "Keep planning", c.dim)
+                    .on_click(on_tab(&look.view, |this, cx| this.keep_planning(cx))),
+            );
         Some(
             layer
                 .block_mouse_except_scroll()
                 .child(
                     div()
                         .w_full()
-                        .px(px(super::AREA_X))
-                        .pb(px(8.))
+                        .pb(px(6.))
                         .flex()
                         .justify_center()
-                        .child(bar),
+                        .child(self.marked("plan-pill", pill)),
                 )
                 .into_any_element(),
         )

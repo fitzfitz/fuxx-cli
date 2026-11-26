@@ -452,6 +452,7 @@ impl AgentTab {
                 ..
             } => self.plan_card(k, ix, id, plan, answer.as_ref(), look),
             Item::Permission {
+                id,
                 tool,
                 what,
                 detail,
@@ -475,7 +476,26 @@ impl AgentTab {
                             (Icon::Stop, c.failed)
                         };
                         let tip = format!("{} stopped waiting before you answered.", look.label);
-                        div()
+                        // A long command shows its first line with "…" until opened (chore 23:
+                        // its other lines spilled over the rows round it).
+                        let (first, more) = crate::agent_tab::command_line(what);
+                        let open = more && self.command_open.contains(id);
+                        let words = format!(
+                            "{} \u{b7} {tool} {}",
+                            answer_line(answer),
+                            if open { what.trim() } else { first.as_str() }
+                        );
+                        let text = div().flex_1().min_w(px(0.));
+                        let text = if open {
+                            text.py(px(3.))
+                        } else {
+                            text.truncate()
+                        };
+                        let toggle = {
+                            let id = id.clone();
+                            on_tab(&look.view, move |this, cx| this.toggle_command(&id, ix, cx))
+                        };
+                        self.marked("permission-answer", div())
                             .id(SharedString::from(format!("permission-answer-{ix}")))
                             .when(withdrawn, |d| {
                                 d.tooltip(move |_, cx| {
@@ -483,20 +503,35 @@ impl AgentTab {
                                         .into()
                                 })
                             })
+                            .when(more, |d| {
+                                d.cursor_pointer()
+                                    .hover(move |s| s.text_color(hsla(c.text)))
+                                    .on_click(toggle)
+                            })
                             .w_full()
-                            .h(px(22.))
+                            .min_h(px(22.))
                             .flex()
-                            .items_center()
+                            .items_start()
                             .gap(px(6.))
                             .text_size(px(text::META))
                             .text_color(hsla(c.dim))
-                            .child(icon(glyph, px(12.), hsla(ink)))
-                            .child(div().flex_1().min_w(px(0.)).truncate().child(
-                                SharedString::from(format!(
-                                    "{} · {tool} {what}",
-                                    answer_line(answer)
-                                )),
-                            ))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .h(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .child(icon(glyph, px(12.), hsla(ink))),
+                            )
+                            .child(
+                                self.marked(
+                                    "permission-answer-text",
+                                    text.min_h(px(22.))
+                                        .flex()
+                                        .items_center()
+                                        .child(SharedString::from(words)),
+                                ),
+                            )
                             .into_any_element()
                     }
                     // An older ask goes first (the design review): this one waits, quiet and
@@ -509,7 +544,8 @@ impl AgentTab {
                         let line = if what.trim().is_empty() {
                             format!("Next \u{b7} {label} wants to run {tool}")
                         } else {
-                            format!("Next \u{b7} {label} wants to run {tool}: {}", what.trim())
+                            let (first, _) = crate::agent_tab::command_line(what);
+                            format!("Next \u{b7} {label} wants to run {tool}: {first}")
                         };
                         self.queued_line(ix, line, look)
                     }
