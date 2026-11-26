@@ -789,9 +789,17 @@ pub enum Step {
 }
 
 /// The step for a change the provider takes as `applies`, the agent's process `running`, a
-/// message `spoken` in the tab, a turn `working`.
-pub fn step_for(applies: Applies, running: bool, spoken: bool, working: bool) -> Step {
+/// message `spoken` in the tab, a turn `working`; `mid_turn`: the agent takes it mid-turn
+/// (Claude's mode, chore 27), so a live one goes at once even while a turn runs.
+pub fn step_for(
+    applies: Applies,
+    running: bool,
+    spoken: bool,
+    working: bool,
+    mid_turn: bool,
+) -> Step {
     match (applies, spoken) {
+        (Applies::Live, true) if running && mid_turn => Step::Live,
         // Nothing said yet: live on a running agent, else it starts again with the change (no
         // process: only its start flags change).
         (Applies::Live, false) if running => Step::Live,
@@ -3412,11 +3420,23 @@ mod tests {
         ];
         for (applies, running, spoken, working, want) in table {
             assert_eq!(
-                step_for(applies, running, spoken, working),
+                step_for(applies, running, spoken, working, false),
                 want,
                 "{applies:?} running {running} spoken {spoken} working {working}"
             );
         }
+    }
+
+    /// Chore 27: a change the agent takes mid-turn (Claude's mode) goes at once on a running
+    /// process, while a turn runs or a card waits; anything else keeps its step.
+    #[test]
+    fn a_mid_turn_change_goes_while_the_turn_runs() {
+        assert_eq!(step_for(Live, true, true, true, true), Step::Live);
+        assert_eq!(step_for(Live, true, true, true, false), AfterTurn);
+        // No process: the next start takes it, as before.
+        assert_eq!(step_for(Live, false, true, true, true), AfterTurn);
+        assert_eq!(step_for(Restart, true, true, true, true), AfterTurn);
+        assert_eq!(step_for(Live, true, true, false, true), Step::Live);
     }
 
     #[test]

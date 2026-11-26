@@ -3295,8 +3295,9 @@ pub(super) fn agent_box_mode_reported() {
 
 /// R9: Claude leaving plan mode by itself (a plan approved) is followed: the chip, the menu's ✓
 /// and the saved mode say the mode it reports, so choosing Plan again asks for it (and a
-/// restart doesn't resume a stale plan mode). While a change of yours is pending (asked, or
-/// waiting for the turn), what Claude reports is not taken: yours is what it runs next.
+/// restart doesn't resume a stale plan mode). While a change of yours is pending (asked), what
+/// Claude reports is not taken: yours is what it runs next. A mode chosen mid-turn is asked at
+/// once (chore 27).
 pub(super) fn agent_box_mode_follows_claude() {
     run_scene(
         "agent-box-mode-follows-claude",
@@ -3358,15 +3359,21 @@ pub(super) fn agent_box_mode_follows_claude() {
             assert_eq!(mode(cx).as_deref(), Some("plan"), "{n}: yours, confirmed");
             let saved = told.borrow().len();
 
-            // Waiting for the turn: what Claude reports meanwhile is not taken either.
+            // Chore 27: chosen while the turn runs, it is asked at once (Claude takes a mode
+            // mid-turn: its next tool call is asked in it), nothing waits for the turn; what
+            // Claude reports before it answers is not taken.
             feed(cx, tab, |t, cx| t.send("Go on".into(), cx));
-            feed(cx, tab, |t, cx| {
-                t.choose(Change::Mode("acceptEdits".into()), cx)
-            });
+            assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Working, "{n}");
+            let before = written(cx, tab).len();
+            feed(cx, tab, |t, cx| t.choose(Change::Mode("auto".into()), cx));
+            let asks = written(cx, tab).split_off(before);
+            assert_eq!(asks.len(), 1, "{n}: asked mid-turn: {asks:?}");
+            assert_eq!(asks[0]["request"]["subtype"], "set_permission_mode", "{n}");
+            assert_eq!(asks[0]["request"]["mode"], "auto", "{n}");
             assert_eq!(
                 cx.read(|cx| tab.read(cx).waiting_change().cloned()),
-                Some(Change::Mode("acceptEdits".into())),
-                "{n}: it waits"
+                None,
+                "{n}: nothing waits for the turn"
             );
             feed(cx, tab, |t, cx| {
                 t.shot_feed(vec![Event::Mode("default".into())], cx)
@@ -3374,9 +3381,21 @@ pub(super) fn agent_box_mode_follows_claude() {
             assert_eq!(
                 mode(cx).as_deref(),
                 Some("plan"),
-                "{n}: ignored while waiting"
+                "{n}: ignored while asked"
             );
             assert_eq!(told.borrow().len(), saved, "{n}: nothing saved");
+            feed(cx, tab, |t, cx| {
+                t.shot_feed(
+                    vec![Event::Applied {
+                        kind: ChangeKind::Mode,
+                        value: "auto".into(),
+                        ok: true,
+                    }],
+                    cx,
+                )
+            });
+            assert_eq!(mode(cx).as_deref(), Some("auto"), "{n}: in force mid-turn");
+            assert_eq!(chip(cx).as_deref(), Some("Auto"), "{n}");
         },
     );
 }

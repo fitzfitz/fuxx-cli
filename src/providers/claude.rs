@@ -444,6 +444,12 @@ impl Provider for Claude {
     /// Model, effort and mode switch live on the running process (`set_model`,
     /// `apply_flag_settings`, `set_permission_mode`: Task 0, before the first message and
     /// mid-conversation); a folder is a restart (`--resume` from the new folder).
+    /// `set_permission_mode` takes at once, also while a turn runs (`claude-mode-mid-turn.jsonl`;
+    /// the Agent SDK: "takes effect immediately for all subsequent tool requests").
+    fn mode_mid_turn(&self) -> bool {
+        true
+    }
+
     fn applies(&self, change: ChangeKind) -> Applies {
         match change {
             ChangeKind::Model | ChangeKind::Effort | ChangeKind::Mode => Applies::Live,
@@ -5275,6 +5281,35 @@ mod tests {
                 (Mode, "acceptEdits".to_string(), true),
             ]
         );
+    }
+
+    /// Chore 27 (`claude-mode-mid-turn.jsonl`, Claude Code 2.1.331): Auto asked while the turn
+    /// runs (at its first prompt) is answered and reported at once, before the turn ends, and
+    /// the turn's next Write asks nothing. So Claude takes a mode change mid-turn.
+    #[test]
+    fn a_mode_asked_mid_turn_takes_before_the_turn_ends() {
+        assert!(CLAUDE.mode_mid_turn());
+        let mut t = CLAUDE.translator();
+        t.encode(&Action::SetMode {
+            mode: "auto".into(),
+        });
+        let text = renamed(
+            include_str!("fixtures/claude-mode-mid-turn.jsonl"),
+            &[("fuxx-mode-1", "fuxx-set-1")],
+        );
+        let events: Vec<Event> = text.lines().flat_map(|l| t.decode(l)).collect();
+        let at = |want: &dyn Fn(&Event) -> bool| events.iter().position(want).unwrap();
+        let applied = at(
+            &|e| matches!(e, Event::Applied { kind: ChangeKind::Mode, value, ok: true } if value == "auto"),
+        );
+        let reported = at(&|e| matches!(e, Event::Mode(m) if m == "auto"));
+        let done = at(&|e| matches!(e, Event::TurnDone { .. }));
+        assert!(applied < done && reported < done, "inside the turn");
+        let prompts = events
+            .iter()
+            .filter(|e| matches!(e, Event::Permission { .. }))
+            .count();
+        assert_eq!(prompts, 1, "only the Write before the switch asked");
     }
 
     #[test]

@@ -335,6 +335,11 @@ pub trait Provider: Sync {
     fn applies(&self, _change: ChangeKind) -> Applies {
         Applies::Restart
     }
+    /// A live mode change reaches the running agent mid-turn too: its next tool call is asked
+    /// in the new mode (chore 27, note 93). Default: no, it waits for the turn to end.
+    fn mode_mid_turn(&self) -> bool {
+        false
+    }
     /// The folders the agent itself knows (its own list of projects), under your `home`.
     /// Reads files: call it off the UI thread. Default: none.
     fn known_folders(&self, _home: &Path) -> Vec<PathBuf> {

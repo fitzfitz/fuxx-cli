@@ -6,7 +6,8 @@ Usage: python3 -I scripts/record-agent-fixture.py <claude|agy> <scenario> <workd
 
 Scenarios (claude): text, tools, permission-allow, permission-deny, permission-always,
   interrupt, interrupt-text, queue, resume (needs session-id), slash, bad-resume,
-  initialize, set-model, set-effort, set-mode, image, move (M11ak Task 0)
+  initialize, set-model, set-effort, set-mode, image, move (M11ak Task 0), mode-mid-turn,
+  plan-auto (note 93, chores 26-27)
 Scenarios (agy): text, tools, resume (needs session-id = conversation id), bad-resume,
   restart-flags (5th argument: a model id; an optional 6th, an effort, adds `--effort <it>`),
   move, image
@@ -213,6 +214,9 @@ class Run:
         self.err_path = out + ".stderr"
         self.deadline = time.time() + TIMEOUT
         self.prompts = 0
+        # A scenario's own answer (`custom(run, request) -> response`), and the tools that asked.
+        self.custom = None
+        self.prompted = []
         self.started = time.time()
         self.p = subprocess.Popen(argv, cwd=workdir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True, bufsize=1, start_new_session=True)
@@ -295,7 +299,10 @@ class Run:
 
     def answer(self, e):
         req = e["request"]
-        if self.policy == "deny":
+        self.prompted.append(req.get("tool_name"))
+        if self.custom:
+            resp = self.custom(self, req)
+        elif self.policy == "deny":
             resp = {"behavior": "deny", "message": "Not now"}
         else:
             resp = {"behavior": "allow", "updatedInput": req["input"]}
@@ -349,7 +356,8 @@ SCENARIOS = {
     "claude": {"text", "tools", "permission-allow", "permission-deny", "permission-always", "interrupt",
                "interrupt-text", "queue", "resume", "slash", "bad-resume",
                "initialize", "set-model", "set-effort", "set-mode", "image", "move",
-               "subagents", "subagent-stop", "subagent-ask", "background-shells"},
+               "subagents", "subagent-stop", "subagent-ask", "background-shells",
+               "mode-mid-turn", "plan-auto"},
     "agy": {"text", "tools", "resume", "bad-resume", "restart-flags", "move", "image", "subagents"},
 }
 TOOL_PROMPT = ("Do these four things in order, using the matching tools: 1) Read the file notes.txt "
@@ -376,6 +384,12 @@ SUBAGENT_STOP = ("Use the Agent tool once: the subagent runs `python3 -c 'import
 BACKGROUND = ("Start two shells with the Bash tool, each with run_in_background set to true, in one message: "
               "the first runs `for i in 1 2 3; do echo step $i; sleep 3; done`, the second runs "
               "`python3 -c 'import time; time.sleep(120)'`. Do not wait for them; say started.")
+# Chore 27 (note 93): Auto chosen while the turn runs, at its first prompt; the later tools
+# should not ask.
+MID_TURN = ("Do three things in order, in this one turn, using the matching tools: 1) run `sleep 2` "
+            "with the Bash tool in the foreground 2) create a file named hello.txt containing the "
+            "word hi, using the Write tool 3) create a file named bye.txt containing the word bye, "
+            "using the Write tool. Then say done.")
 SUBAGENT_ASK = ("Use the Agent tool once: the subagent creates a file named hello.txt containing the word "
                 "hi, using the Write tool, then reports. Then say done.")
 
@@ -497,6 +511,32 @@ def play(r, scenario):
         ask(r, "fuxx-mode-2", {"subtype": "set_permission_mode", "mode": "acceptEdits"})
         r.send(user(WRITE_PROMPT))
         r.expect_result()
+    elif scenario == "mode-mid-turn":  # chore 27: set_permission_mode while the turn runs
+        answered(r, "fuxx-init", 60)
+
+        def switch_at_first_prompt(r, req):
+            if len(r.prompted) == 1:
+                r.send({"type": "control_request", "request_id": "fuxx-mode-1",
+                        "request": {"subtype": "set_permission_mode", "mode": "auto"}})
+            return {"behavior": "allow", "updatedInput": req["input"]}
+        r.custom = switch_at_first_prompt
+        r.send(user(MID_TURN))
+        r.expect_result()
+        print("prompted:", r.prompted)
+    elif scenario == "plan-auto":  # chore 26: a plan approved with the session put in Auto
+        answered(r, "fuxx-init", 60)
+        ask(r, "fuxx-mode-1", {"subtype": "set_permission_mode", "mode": "plan"})
+
+        def plan_into_auto(r, req):
+            resp = {"behavior": "allow", "updatedInput": req["input"]}
+            if req.get("tool_name") == "ExitPlanMode":
+                resp["updatedPermissions"] = [{"type": "setMode", "mode": "auto",
+                                               "destination": "session"}]
+            return resp
+        r.custom = plan_into_auto
+        r.send(user(WRITE_PROMPT))
+        r.expect_result()
+        print("prompted:", r.prompted)
     elif scenario == "image":
         if IS_AGY:  # agy takes no image blocks: the PNG's path in the text
             path = os.path.join(r.raw_workdir, "red.png")

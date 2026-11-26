@@ -4867,7 +4867,15 @@ impl AgentTab {
                 continue;
             }
             let applies = Self::applies(provider, &kinds);
-            match step_for(applies, self.running(), self.spoken(), self.working()) {
+            let mid_turn = matches!(change, Change::Mode(_)) && provider.mode_mid_turn();
+            let step = step_for(
+                applies,
+                self.running(),
+                self.spoken(),
+                self.working(),
+                mid_turn,
+            );
+            match step {
                 Step::Live => self.ask_live(provider, &change, &kinds, cx),
                 Step::AfterTurn => self.waiting.push(change),
                 Step::NextStart => self.set_start(provider, &change, cx),
