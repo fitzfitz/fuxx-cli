@@ -95,8 +95,9 @@ fn view(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> View {
 
 /// The tab: `🤖 1/2` in the corner tab, left of the plan's `☰`, on the folder tab's row; on
 /// Main no top row (no pills, no breadcrumb), the chat 16 pt down (chore 21). ⌥⌘] steps into the newest subagent: the slim row
-/// `← Main › 🤖 <label>` shows 16 pt down (and the folder tab's status mark is back: no status line in a
-/// subagent's view, chore 17); `← Main` goes back; ⌥⌘[ from the newest steps to Main.
+/// `← Main › 🤖 <label>` shows 16 pt down (the running subagent's own view is the running mark, so
+/// the folder tab has none and the subagents tab no arc: chore 31); `← Main` goes back; ⌥⌘[ from
+/// the newest steps to Main.
 pub(super) fn agent_subagents_tab() {
     shoot("agent-subagents-tab", DIMS, |n, cx, window, tab, _| {
         let ids = two_subagents(cx, tab);
@@ -136,7 +137,7 @@ pub(super) fn agent_subagents_tab() {
             View::Lane(ids[1].clone()),
             "{n}: ⌥⌘] to the newest"
         );
-        cx.read(|cx| tab.read(cx).shot_forget(&["status"]));
+        cx.read(|cx| tab.read(cx).shot_forget(&["status", "subagents-tab-arc"]));
         let _ = frame_fresh(cx, window);
         let back = part(cx, tab, n, "lane-back");
         let header = part(cx, tab, n, "lane-header");
@@ -150,8 +151,8 @@ pub(super) fn agent_subagents_tab() {
             header.top()
         );
         assert!(
-            drawn(cx, tab, "status"),
-            "{n}: the folder tab's mark is back with no status line"
+            !drawn(cx, tab, "status") && !drawn(cx, tab, "subagents-tab-arc"),
+            "{n}: one running mark: the running subagent's view (chore 31)"
         );
         click(cx, window, back);
         assert_eq!(view(cx, tab), View::Main, "{n}: ← Main goes back");

@@ -3020,10 +3020,13 @@ impl AgentTab {
         })
     }
 
-    /// The mode chosen: one waiting for the turn (shown at once, your words: "Make sure I can
-    /// choose mode mid run"), else the start flag's.
+    /// The mode chosen: one waiting for the turn, or asked and not yet answered (shown at once,
+    /// your words: "Make sure I can choose mode mid run"; chore 27: mid-turn it is asked at
+    /// once), else the start flag's.
     pub(crate) fn mode_chosen(&self) -> Option<&str> {
-        self.waiting_mode().or(self.start.mode.as_deref())
+        self.waiting_mode()
+            .or(self.asked.mode.as_deref())
+            .or(self.start.mode.as_deref())
     }
 
     /// The mode asked of the running agent that it hasn't answered yet (⇧Tab moves on from it).

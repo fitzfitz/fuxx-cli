@@ -983,8 +983,8 @@ pub(super) fn agent_box_shell_keys() {
 
 /// Your words: "Make sure I can choose mode mid run and the next prompt will pick up my chosen
 /// mode. same goes model": a mode chosen while Claude works shows at once on the chip and in the
-/// menu (it waits for the turn, as a model does), and when the turn ends the mode is asked for
-/// before the next message is written.
+/// menu, and (chore 27) is asked for at once, mid-turn, so the turn's next tool call and the
+/// next message both run in it; nothing more is asked when the turn ends.
 pub(super) fn agent_box_mode_waits() {
     run_scene(
         "agent-box-mode-waits",
@@ -993,29 +993,31 @@ pub(super) fn agent_box_mode_waits() {
         |n, cx, tab, _told| {
             feed(cx, tab, |t, cx| t.send("Fix notes.txt".into(), cx));
             assert_eq!(cx.read(|cx| tab.read(cx).status()), Status::Working, "{n}");
+            let before = written(cx, tab).len();
             feed(cx, tab, |t, cx| t.choose(Change::Mode("plan".into()), cx));
             assert_eq!(
                 cx.read(|cx| tab.read(cx).shot_box(cx)).mode.as_deref(),
                 Some("Plan"),
                 "{n}: the chip shows the mode chosen, at once"
             );
+            let asked: Vec<_> = written(cx, tab).split_off(before);
+            assert_eq!(asked.len(), 1, "{n}: asked mid-turn: {asked:?}");
+            assert_eq!(asked[0]["request"]["subtype"], "set_permission_mode", "{n}");
+            assert_eq!(asked[0]["request"]["mode"], "plan", "{n}");
             let before = written(cx, tab).len();
             feed(cx, tab, |t, cx| t.shot_feed(vec![turn_done()], cx));
             feed(cx, tab, |t, cx| t.send("Now plan the rest".into(), cx));
             let lines = written(cx, tab);
             let after: Vec<_> = lines[before..].iter().collect();
-            let mode_at = after
-                .iter()
-                .position(|l| l["request"]["subtype"] == "set_permission_mode")
-                .unwrap_or_else(|| panic!("{n}: the mode asked for: {after:?}"));
-            assert_eq!(after[mode_at]["request"]["mode"], "plan", "{n}");
-            let message_at = after
-                .iter()
-                .position(|l| l["type"] == "user")
-                .unwrap_or_else(|| panic!("{n}: the next message: {after:?}"));
             assert!(
-                mode_at < message_at,
-                "{n}: the mode before the next message"
+                after
+                    .iter()
+                    .all(|l| l["request"]["subtype"] != "set_permission_mode"),
+                "{n}: nothing more asked after the turn: {after:?}"
+            );
+            assert!(
+                after.iter().any(|l| l["type"] == "user"),
+                "{n}: the next message: {after:?}"
             );
         },
     );
