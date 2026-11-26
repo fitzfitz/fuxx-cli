@@ -1621,3 +1621,9 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     nor wrap) plus a narrow-pane minor and a long one-liner, fixed. Deferred minors: a "Needs you" row lands on the
     oldest question when two subagents wait; the breadcrumb's label doesn't shorten in very narrow panes; the
     subagents and shells popovers share a frame shape not yet one helper; `PlanDraft.title` is now unused.
+- **Chore 24 (queued, not built): a scene that ends on the folded approved plan** (your words, 2026-11-26: "queue it
+  as a chore", after the landing update for v0.13.9). The `agent-plan-approved` scene
+  (src/ui_shots/agent_activity.rs) ends with the plan opened again, so the landing's "Plan approved" image had to be
+  cropped from `agent-plan-long-command`. Add a scene (or a last frame) that ends on the folded one-line card,
+  `☰ Plan approved · auto-accept edits ✓ … Show plan ›`, with a check on that line; then point the landing's
+  `plan-approved` shot at it (`pnpm sync-shots` in fuxx-landing) and ship the site.
