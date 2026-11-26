@@ -1714,13 +1714,30 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     "…"; chore 29 is pinned only on the branch picker; `toggle_input` repeats `toggle_command`'s shape; in Main with
     no status line a background subagent's arc shows in its tab and its chat row; approving into Auto while another
     mode change is pending shows that one until Claude reports Auto.
-- **Chore 32 (queued, not built): the plan tab ticks a closing task that only runs things** (your words, 2026-11-26,
-  with a picture of the 🤖 10/10 ✓ and ☰ 8/9 tabs, "Task 9: Docs, screenshots, review" still ◐: "last task is still
-  hanging when its actually done" → my take → "queue it"). Cause, found: chore 20 ticks a task once commits touched
-  most files it names; plan 2026-11-26-chores-25-30's Task 9 names `scripts/prune-target.sh` (one it runs, never
-  edits; `is_file` in src/plan_progress.rs takes any spaceless backticked path) and its `- [ ]` box was never ticked,
-  so it can never tick. (1) A file a task only runs doesn't count as one it changes (a `scripts/…` named as a step
-  to run, or under no `**Files:**` line); a task naming no changed files ticks once a later commit lands after the
-  previous task's (the closing docs commit). (2) Builds tick their plan's boxes as each task finishes (say so in
-  the milestone build workflow, docs/05-Agentic-Workflow/50 - Agentic Workflow.md). (3) A test from that real plan
-  and its commits: 9 of 9.
+- **Chore 32: the plan tab ticks a closing task that only runs things** (your words, 2026-11-26, with a picture of
+  the 🤖 10/10 ✓ and ☰ 8/9 tabs, "Task 9: Docs, screenshots, review" still ◐: "last task is still hanging when its
+  actually done" → my take → "queue it"). **Cause** (confirmed by a test from the real plan: 8 of 9): chore 20 ticks
+  a task once commits touched most files it names, and `task_files` took any spaceless backticked path in a task's
+  section; plan 2026-11-26-chores-25-30's Task 9 named only `scripts/prune-target.sh` (run, never edited) and its
+  box was never ticked, so it could never tick. **Built:** (1) a task's changed files are the paths its `**Files:**`
+  block names (that line and the lines under it, up to a blank line, a step's box or another bold label); a path
+  only in a step isn't one. A task naming no files is done, once the task before it is, by the first later commit
+  that touches none of the plan's files (the closing docs commit; a fix to an earlier task doesn't count). "Task N"
+  commits are read before the files, so such a task can follow one. (2) The milestone build workflow (note 50)
+  says a build ticks its plan's boxes as each task finishes; the 25–30 and 17–21 plans' boxes are ticked. (3) Tests
+  from the real plans and their commits (`src/plan_progress/real_plans.rs`): chores 25–30 reads 9 of 9 (Task 9 by
+  `991d32a`), replayed commit by commit, and replayed with the boxes ticked as it was built; chores 17–21 reads 7 of
+  7; chore 16's plan still 5 of 5. Every plan in docs/superpowers/plans read against the real log: four went from
+  one short to full, none went down. Commits `7d6419e`, `2fa1310`.
+  - **Rulings:** a plan with no `**Files:**` lines ticks by its boxes, commit messages and "Task N" only (every plan
+    here has them); a files-less first task has no earlier commit to follow, so only its boxes tick it.
+  - **Review** (one review on Opus): 2 Important, both fixed with tests first: the closing task ticked on a
+    fix-wave commit (now: a commit touching none of the plan's files); with boxes ticked during a build, a
+    box-ticked task gave no commit, so an earlier task's commit could tick a later one early (now a box-ticked task
+    still finds its commit). Deferred minors: the Files label is matched only as `**Files` (not `- **Files:**`,
+    `Files:` or lowercase); "Task N" takes the newest commit naming the task, so a later "Task 3 fix" moves the
+    floor past an unnamed Task 4 whose files are all earlier tasks'.
+  - **Checks:** tests 3024 green; no clippy warnings in the files touched (both runs); `cargo fmt --check` clean.
+    No ui-shots scene reads a plan file and its commits (the plan scenes use a todo list), so none was run.
+  - [ ] Your check: on the next plan built here, the ☰ tab ticks each task as it lands and reads all done after
+    the closing docs commit (unticked boxes or not).

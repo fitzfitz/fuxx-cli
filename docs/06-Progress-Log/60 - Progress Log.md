@@ -44,6 +44,19 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — Chore 32: the plan tab ticks a closing task
+
+- **What:** your words: "last task is still hanging when its actually done" (☰ 8/9 on the built chores 25–30
+  plan). Cause: chore 20 counted any backticked path in a task as a file it changes, and Task 9 named only
+  `scripts/prune-target.sh`, a script it runs. Now a task's changed files are its `**Files:**` block's; a task
+  naming none is done by the first commit after the earlier tasks' that touches none of the plan's files (the
+  closing docs commit). Builds tick their plan's boxes as each task finishes (note 50); the 25–30 and 17–21 plans
+  ticked. Commits `7d6419e`, `2fa1310`.
+- **Checks:** tests from the real plans and commits: 25–30 reads 9 of 9, 17–21 7 of 7, chore 16 still 5 of 5;
+  tests 3024 green, clippy (both runs) clean in the files touched, fmt clean. One review on Opus: 2 Important
+  fixed (a fix-wave commit ticked the closing task; a box-ticked task let an earlier commit tick a later task early).
+- **Next:** your on-screen check (note 93, chore 32); not pushed.
+
 ### 2026-11-26 — v0.13.10 released
 
 - **What:** your words: "yes, build 25 to 30 and release", then "include 24 too" and "build 31 too and release with
