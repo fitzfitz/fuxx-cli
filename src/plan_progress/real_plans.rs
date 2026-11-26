@@ -216,7 +216,7 @@ fn chores_25_30s_plan_reads_9_of_9() {
     let mut newest_first = chores_25_30_commits();
     newest_first.reverse();
     let mut tasks = from_checklist(CHORES_25_30_PLAN);
-    mark_done(&mut tasks, CHORES_25_30_PLAN, &newest_first);
+    mark_done(&mut tasks, CHORES_25_30_PLAN, &newest_first, None);
     assert_eq!(counts(&tasks), (9, 9), "{tasks:?}");
     let by: Vec<Option<&str>> = tasks.iter().map(commit_of).collect();
     assert_eq!(
@@ -245,7 +245,7 @@ fn the_closing_task_waits_for_a_commit_after_the_last_built_one() {
         let mut newest_first = all[..landed].to_vec();
         newest_first.reverse();
         let mut tasks = from_checklist(CHORES_25_30_PLAN);
-        mark_done(&mut tasks, CHORES_25_30_PLAN, &newest_first);
+        mark_done(&mut tasks, CHORES_25_30_PLAN, &newest_first, None);
         let closing_done = matches!(tasks[8].state, TaskState::Done { .. });
         assert_eq!(
             closing_done,
@@ -287,16 +287,16 @@ fn a_task_with_no_files_follows_the_previous_tasks_commit() {
     let named = commit("aaa1111", "Task 1: A", &["src/retry.rs"]);
     let later = commit("bbb2222", "docs: the plan built", &["docs/notes.md"]);
     let mut tasks = from_checklist(md);
-    mark_done(&mut tasks, md, &[later.clone(), named.clone()]);
+    mark_done(&mut tasks, md, &[later.clone(), named.clone()], None);
     assert_eq!(counts(&tasks), (2, 2), "{tasks:?}");
     assert_eq!(commit_of(&tasks[1]), Some("bbb2222"));
     // Without a commit after Task 1's, Task 2 is being built.
     let mut tasks = from_checklist(md);
-    mark_done(&mut tasks, md, std::slice::from_ref(&named));
+    mark_done(&mut tasks, md, std::slice::from_ref(&named), None);
     assert_eq!(tasks[1].state, TaskState::Building);
     // Nothing done before it: a files-less first task isn't ticked by any commit.
     let mut tasks = from_checklist(md);
-    mark_done(&mut tasks, md, &[later]);
+    mark_done(&mut tasks, md, &[later], None);
     assert_eq!(counts(&tasks), (0, 2));
 }
 
@@ -309,10 +309,10 @@ fn a_fix_to_an_earlier_task_doesnt_tick_the_closing_one() {
     let fix = commit("bbb2222", "Retry: review fix", &["src/retry.rs"]);
     let docs = commit("ccc3333", "docs: retry built", &["docs/notes.md"]);
     let mut tasks = from_checklist(md);
-    mark_done(&mut tasks, md, &[fix.clone(), built.clone()]);
+    mark_done(&mut tasks, md, &[fix.clone(), built.clone()], None);
     assert_eq!(tasks[1].state, TaskState::Building, "{tasks:?}");
     let mut tasks = from_checklist(md);
-    mark_done(&mut tasks, md, &[docs, fix, built]);
+    mark_done(&mut tasks, md, &[docs, fix, built], None);
     assert_eq!(commit_of(&tasks[1]), Some("ccc3333"));
 }
 
@@ -353,7 +353,7 @@ fn a_plan_ticked_as_it_is_built_reads_one_task_at_a_time() {
         let mut newest_first = all[..landed].to_vec();
         newest_first.reverse();
         let mut tasks = from_checklist(&md);
-        mark_done(&mut tasks, &md, &newest_first);
+        mark_done(&mut tasks, &md, &newest_first, None);
         let done: Vec<usize> = (0..tasks.len())
             .filter(|&i| matches!(tasks[i].state, TaskState::Done { .. }))
             .collect();

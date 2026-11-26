@@ -126,17 +126,8 @@ fn git_facts(git: &Path, root: &Path, paths: &[PathBuf]) -> Option<(Statuses, Co
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut statuses = Statuses::new();
     if let Some(out) = run_git(git, root, &args) {
-        let mut entries = out.split('\0');
-        while let Some(entry) = entries.next() {
-            if entry.len() < 4 {
-                continue;
-            }
-            let (xy, path) = entry.split_at(3);
-            let xy = xy.trim_end();
-            // A rename's old path follows it.
-            if xy.starts_with('R') || xy.starts_with('C') {
-                entries.next();
-            }
+        for (xy, path) in porcelain(&out) {
+            let xy = xy.as_str();
             let status = if xy == "??" || xy.contains('A') {
                 FileStatus::Added
             } else if xy.contains('D') {
@@ -144,7 +135,7 @@ fn git_facts(git: &Path, root: &Path, paths: &[PathBuf]) -> Option<(Statuses, Co
             } else {
                 FileStatus::Modified
             };
-            if let Some(path) = back(path) {
+            if let Some(path) = back(&path) {
                 statuses.insert(path, status);
             }
         }
@@ -165,6 +156,25 @@ fn git_facts(git: &Path, root: &Path, paths: &[PathBuf]) -> Option<(Statuses, Co
         }
     }
     Some((statuses, counts))
+}
+
+/// `git status --porcelain=v1 -z`'s entries: each one's status (`M`, `??`, `R`…) and its path
+/// from the repo's top (a rename's new path; its old one, which follows it, is skipped).
+pub fn porcelain(out: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut entries = out.split('\0');
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 || !entry.is_char_boundary(3) {
+            continue;
+        }
+        let (xy, path) = entry.split_at(3);
+        let xy = xy.trim();
+        if xy.starts_with('R') || xy.starts_with('C') {
+            entries.next();
+        }
+        found.push((xy.to_string(), path.to_string()));
+    }
+    found
 }
 
 /// A text file's lines (a new file's `+`); none for one that can't be read as text.

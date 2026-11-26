@@ -399,8 +399,14 @@ pub fn commits_since(commits: &[GitCommit], since: i64) -> Vec<GitCommit> {
 
 /// A plan's tasks marked by `commits` (newest first): by their planned messages (chore 15),
 /// "Task N", then the files they name (chore 20; after the others, so a task naming no files
-/// can follow a task "Task N" marked), and the next one in progress.
-pub fn mark_done(tasks: &mut [PlanTask], md: &str, commits: &[GitCommit]) {
+/// can follow a task "Task N" marked); then, when git's uncommitted paths are known (`dirty`,
+/// from the repo's top), those being built (`mark_working`), and the next one in progress.
+pub fn mark_done(
+    tasks: &mut [PlanTask],
+    md: &str,
+    commits: &[GitCommit],
+    dirty: Option<&[String]>,
+) {
     let subjects: Vec<(String, String)> = commits
         .iter()
         .map(|c| (c.hash.clone(), c.subject.clone()))
@@ -411,8 +417,50 @@ pub fn mark_done(tasks: &mut [PlanTask], md: &str, commits: &[GitCommit]) {
         .collect();
     match_planned(tasks, &subjects, &planned_subjects(md));
     match_named(tasks, &subjects);
-    match_files(tasks, &touched, &task_files(md));
+    let files = task_files(md);
+    match_files(tasks, &touched, &files);
+    if let Some(dirty) = dirty {
+        mark_working(tasks, &files, dirty);
+    }
     mark_building(tasks);
+}
+
+/// The tasks not done by the files they name (`files`, by task) and git's uncommitted paths
+/// (chore 36): one whose own files change is ◐, any other ○ (some boxes ticked early is no
+/// building). A file an earlier unfinished task names too is that task's. A plan naming no
+/// files keeps its boxes' word.
+fn mark_working(tasks: &mut [PlanTask], files: &[Vec<String>], dirty: &[String]) {
+    if files.iter().all(Vec::is_empty) {
+        return;
+    }
+    let same = |a: &str, b: &str| names_file(a, b) || names_file(b, a);
+    let mut claimed: Vec<&String> = Vec::new();
+    for (k, task) in tasks.iter_mut().enumerate() {
+        if matches!(task.state, TaskState::Done { .. }) {
+            continue;
+        }
+        let named = files.get(k).map_or(&[][..], Vec::as_slice);
+        let changing = named
+            .iter()
+            .any(|f| dirty.iter().any(|p| names_file(p, f)) && !claimed.iter().any(|c| same(c, f)));
+        task.state = if changing {
+            TaskState::Building
+        } else {
+            TaskState::Next
+        };
+        claimed.extend(named);
+    }
+}
+
+/// The uncommitted paths that can mark a plan's tasks (from `git status --porcelain=v1 -z`'s
+/// `out`, run at the repo's `top`): every one but the plan file itself (`plan`), which changes
+/// as its boxes are ticked.
+pub fn plan_dirty(top: &std::path::Path, plan: &std::path::Path, out: &str) -> Vec<String> {
+    crate::changed_files::porcelain(out)
+        .into_iter()
+        .map(|(_, path)| path)
+        .filter(|path| top.join(path) != plan)
+        .collect()
 }
 
 /// `git log --name-only --format=%x1e%h%x09%ct%x09%s`'s output as commits (a record each,
@@ -1062,7 +1110,7 @@ mod tests {
             })
             .collect();
         let mut tasks = from_checklist(CHORE_16_PLAN);
-        mark_done(&mut tasks, CHORE_16_PLAN, &commits);
+        mark_done(&mut tasks, CHORE_16_PLAN, &commits, None);
         assert_eq!(counts(&tasks), (5, 5));
     }
 
@@ -1092,5 +1140,95 @@ mod tests {
             .map(|n| format!("- [x] step {n}\n"))
             .collect::<String>();
         assert_eq!(counts(&from_checklist(&md)), (6, 6));
+    }
+
+    /// Chore 36, chores 33–35's plan: Task 3 showed ◐ because its first check was ticked early,
+    /// Task 2 ○ though its files were changing. A task is ◐ while uncommitted changes touch the
+    /// files its `**Files:**` block names; some boxes ticked and none of its files changing is ○.
+    const BUILDING_PLAN: &str = "\
+# Chores Implementation Plan
+
+### Task 1: The send button
+
+**Files:** Modify `src/agent_tab.rs`, `src/ui_shots/agent_box.rs`.
+
+- [x] Test first.
+- [x] Implement.
+
+### Task 2: Corner tabs
+
+**Files:** Modify `src/agent_box.rs`, `src/corner_tabs.rs`, `src/agent_tab.rs`.
+
+- [ ] Test first.
+- [ ] Implement.
+
+### Task 3: Local pages
+
+**Files:** Modify `src/auto_open.rs`, `src/agent_tab.rs`.
+
+- [x] First, the check.
+- [ ] Implement.
+
+### Task 4: Docs
+
+**Files:** Modify `docs/plan.md`.
+
+- [ ] Review.
+";
+
+    fn states(dirty: Option<&[&str]>) -> Vec<TaskState> {
+        let dirty: Option<Vec<String>> = dirty.map(|d| d.iter().map(|p| p.to_string()).collect());
+        let mut tasks = from_checklist(BUILDING_PLAN);
+        mark_done(&mut tasks, BUILDING_PLAN, &[], dirty.as_deref());
+        tasks.into_iter().map(|t| t.state).collect()
+    }
+
+    #[test]
+    fn the_task_being_built_follows_its_files() {
+        use TaskState::{Building, Next};
+        let done = TaskState::Done { commit: None };
+        assert_eq!(
+            states(Some(&["src/corner_tabs.rs"])),
+            [done.clone(), Building, Next, Next],
+            "Task 2's files change"
+        );
+        assert_eq!(
+            states(Some(&[])),
+            [done.clone(), Building, Next, Next],
+            "nothing changing: the one after the done one, not the early-ticked Task 3"
+        );
+        assert_eq!(
+            states(Some(&["src/agent_tab.rs"])),
+            [done.clone(), Building, Next, Next],
+            "a file both name: the earlier"
+        );
+        assert_eq!(
+            states(Some(&["src/auto_open.rs", "src/agent_box.rs"])),
+            [done.clone(), Building, Building, Next],
+            "each one's own files"
+        );
+        assert_eq!(
+            states(Some(&["src/auto_open.rs"])),
+            [done.clone(), Next, Building, Next]
+        );
+        assert_eq!(
+            states(None),
+            [done, Next, Building, Next],
+            "no git: by its boxes, as before"
+        );
+    }
+
+    /// The plan file itself changes while its boxes are ticked: no task is built by that.
+    #[test]
+    fn the_plan_file_itself_is_never_a_change() {
+        let out = " M docs/plan.md\0?? src/new.rs\0R  src/b.rs\0src/a.rs\0";
+        assert_eq!(
+            plan_dirty(
+                std::path::Path::new("/w"),
+                std::path::Path::new("/w/docs/plan.md"),
+                out
+            ),
+            ["src/new.rs", "src/b.rs"]
+        );
     }
 }

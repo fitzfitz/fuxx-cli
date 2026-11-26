@@ -6155,14 +6155,16 @@ impl AgentTab {
             let headed = has_task_headings(&text);
             // Commits name the tasks of a headed plan only, and only those made since it was
             // first there.
+            // From the plan's own repo (chore 15: a plan in another repo than the tab's).
+            let repo = path.parent().map_or(cwd.clone(), Path::to_path_buf);
             let commits = if headed {
-                // From the plan's own repo (chore 15: a plan in another repo than the tab's).
-                let repo = path.parent().map_or(cwd.clone(), Path::to_path_buf);
                 commits_since(&recent_commits(&repo), plan_since(&repo, &path))
             } else {
                 Vec::new()
             };
-            Some((text, commits, (path, written)))
+            // What is being changed now marks the task being built (chore 36).
+            let dirty = headed.then(|| uncommitted(&repo, &path)).flatten();
+            Some((text, commits, dirty, (path, written)))
         });
         cx.spawn(async move |this, cx| {
             let read = read.await;
@@ -6173,11 +6175,16 @@ impl AgentTab {
                 }
                 let tasks = match (&todos, read) {
                     (Some(list), _) => from_todos(list),
-                    (None, Some((md, commits, file))) => {
+                    (None, Some((md, commits, dirty, file))) => {
                         // The plan shown from now on, until a turn's own file is one.
                         this.plan_file = Some(file);
                         let mut tasks = from_checklist(&md);
-                        crate::plan_progress::mark_done(&mut tasks, &md, &commits);
+                        crate::plan_progress::mark_done(
+                            &mut tasks,
+                            &md,
+                            &commits,
+                            dirty.as_deref(),
+                        );
                         tasks
                     }
                     (None, None) => Vec::new(),
@@ -6872,6 +6879,26 @@ fn plan_since(cwd: &Path, file: &Path) -> i64 {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64);
     added.into_iter().chain(created).min().unwrap_or(i64::MAX)
+}
+
+/// The paths with uncommitted changes in `repo`'s repository (from its top), but `plan` itself;
+/// none outside a repo or when git fails. Run off the UI thread.
+fn uncommitted(repo: &Path, plan: &Path) -> Option<Vec<String>> {
+    use crate::git_branch::{find_git, run_git};
+    let git = find_git()?;
+    let top = run_git(&git, repo, &["rev-parse", "--show-toplevel"])?;
+    let out = run_git(
+        &git,
+        repo,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    // Git names the top by its real path (`/private/tmp` for `/tmp`): both compared as real.
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    Some(crate::plan_progress::plan_dirty(
+        &real(Path::new(top.trim_end_matches('\n'))),
+        &real(plan),
+        &out,
+    ))
 }
 
 /// The branch's latest commits (short hash, time, subject and the paths each changed), for
