@@ -44,6 +44,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — v0.13.11 released
+
+- **What:** your words: "release it". Version 0.13.11 (`4bd8fe0`), tag `v0.13.11`, Release run 45833649549: test,
+  both slices and the release job green; "fuxx 0.13.11" is the latest release with `fuxx-0.13.11.zip` (32 MB). It
+  carries chores 32–36: the plan tab ticks a closing task and marks the one being built, the send button follows the
+  state, finished corner tabs shrink to their icon, a local HTML page opens in fuxx's browser, and one look for every
+  box popover. The first try's Intel slice waited 17 minutes for a macOS runner and was cancelled with no steps run;
+  rerun on the same tag, green.
+- **Next task:** your on-screen checks (note 93, chores 32–36); the landing update for 0.13.11 (deployed after this).
+
 ### 2026-11-26 — Chore 36: the files and checks popovers look like the corner ones
 
 - **What:** your words: "the fonts the gaps, the sizes on the subagent, shell, tasks popover is cooler" (the
