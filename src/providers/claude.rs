@@ -1750,11 +1750,17 @@ impl ClaudeTranslator {
             let id = s(&i["tool_use_id"]).unwrap_or_default();
             let ok = !i["is_error"].as_bool().unwrap_or(false);
             // The call's final activity, read from the result (the agent activity chore).
+            let shell = self.shells.result(&id, &text);
             let done = self.calls.remove(&id).map(|call| {
                 let not_run = self.denied.remove(&id);
-                activity::call_finished(call, ok, &text, not_run)
+                let mut done = activity::call_finished(call, ok, &text, not_run);
+                // Chore 16: a background shell's result only says it started; a check it runs
+                // has no outcome yet.
+                if let (Some(_), Some(check)) = (&shell, done.check.as_mut()) {
+                    check.outcome = crate::agent_activity::Outcome::Unknown;
+                }
+                done
             });
-            let shell = self.shells.result(&id, &text);
             out.push(Event::ToolFinished {
                 id: id.clone(),
                 ok,

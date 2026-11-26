@@ -113,10 +113,10 @@ const PLAN: &[&str] = &[
 const ACTIVITY: &str = include_str!("../providers/fixtures/claude-activity.jsonl");
 /// The fixtures' folder: their absolute paths and relative ones name the same files.
 const CWD: &str = "/tmp/fx/code/my-app";
-const DIMS: (f32, f32) = (1100.0, 720.0);
+pub(super) const DIMS: (f32, f32) = (1100.0, 720.0);
 
-/// The diff tabs a scene's popover asked for.
-type Told = Rc<RefCell<Vec<PathBuf>>>;
+/// The diff tabs (and file tabs: chore 16's shells) a scene's popover asked for.
+pub(super) type Told = Rc<RefCell<Vec<PathBuf>>>;
 
 fn start() -> Start {
     Start {
@@ -127,7 +127,7 @@ fn start() -> Start {
 
 /// Shoot scene `name` in both themes in a window of `dims`, the tab in the fixtures' folder:
 /// `act` sets it up and checks it before the shot.
-fn shoot(
+pub(super) fn shoot(
     name: &str,
     dims: (f32, f32),
     act: impl Fn(&str, &mut VisualTestAppContext, AnyWindowHandle, &Entity<AgentTab>, &Told) + Clone,
@@ -150,7 +150,7 @@ fn shoot(
                 cx.bind_keys(crate::key_bindings());
                 let tab = cx.new(|cx| AgentTab::for_shots(&CLAUDE, start(), window, cx));
                 cx.subscribe(&tab, move |_, e: &AgentTabEvent, _| {
-                    if let AgentTabEvent::OpenDiff(path) = e {
+                    if let AgentTabEvent::OpenDiff(path) | AgentTabEvent::OpenFile(path) = e {
                         heard.borrow_mut().push(path.clone());
                     }
                 })
@@ -171,7 +171,7 @@ fn shoot(
 }
 
 /// `events` into the tab as the process would bring them.
-fn give(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, events: Vec<Event>) {
+pub(super) fn give(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, events: Vec<Event>) {
     feed(cx, tab, |t, cx| t.shot_feed(events, cx));
 }
 
@@ -186,7 +186,7 @@ fn status(cx: &VisualTestAppContext, tab: &Entity<AgentTab>) -> (String, Option<
         .unwrap_or_else(|| panic!("a status line"))
 }
 
-fn part(
+pub(super) fn part(
     cx: &VisualTestAppContext,
     tab: &Entity<AgentTab>,
     n: &str,
@@ -196,7 +196,11 @@ fn part(
         .unwrap_or_else(|| panic!("{n}: {name} drawn"))
 }
 
-fn click(cx: &mut VisualTestAppContext, window: AnyWindowHandle, at: gpui::Bounds<gpui::Pixels>) {
+pub(super) fn click(
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    at: gpui::Bounds<gpui::Pixels>,
+) {
     cx.simulate_click(window, at.center(), Modifiers::none());
     cx.run_until_parked();
 }
@@ -748,7 +752,7 @@ fn plan_scene(name: &'static str, dims: (f32, f32), long: bool) {
         );
         // Flush with the box's right edge, as the folder tab is with its left (the 2026-11-25
         // chores: "the edge corner, should we make it like this").
-        let shell = part(cx, tab, n, "plan-tab-shell");
+        let shell = part(cx, tab, n, "corner-tabs");
         let outer = part(cx, tab, n, "outer");
         assert!(
             (shell.right() - outer.right()).abs() < px(1.5),

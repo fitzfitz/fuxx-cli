@@ -1680,7 +1680,7 @@ impl AgentTab {
         status: Option<AnyElement>,
         folder: impl IntoElement,
         branch: Option<impl IntoElement>,
-        (the_box, send, corner): (impl IntoElement, impl IntoElement, Option<AnyElement>),
+        (the_box, send, corner): (impl IntoElement, impl IntoElement, Vec<AnyElement>),
         c: &Colors,
     ) -> Div {
         use crate::card_view::{EDGE, OUTER_INSET, PILL_GAP, TAB_PAD, TAB_RISE};
@@ -1723,7 +1723,7 @@ impl AgentTab {
             .border_color(edge)
             // Square under the plan tab, as the top-left is under the folder tab (the 2026-11-25
             // chores: the plan tab flush with the right edge).
-            .rounded_tr(px(if corner.is_some() { 0. } else { 15. }))
+            .rounded_tr(px(if corner.is_empty() { 15. } else { 0. }))
             .rounded_b(px(OUTER_BOTTOM_RADIUS))
             .shadow(vec![shadow])
             .child(rim)
@@ -1790,15 +1790,16 @@ impl AgentTab {
 
     /// The tabs at the folder-tab row's right, flush with the box's edge (the folder tab
     /// mirrored, its step on their left): the shells tab (chore 16) then the plan tab, in one
-    /// tab, with the popover of either hung from the group's right edge; none without either.
-    fn corner_tabs(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// tab, with the popover of either hung from its right edge: the step and the tab, or
+    /// nothing without either.
+    fn corner_tabs(&self, c: &Colors, cx: &mut Context<Self>) -> Vec<AnyElement> {
         use crate::card_view::{EDGE, PILL_GAP, TAB_PAD};
         let pills: Vec<AnyElement> = [self.shells_tab(c, cx), self.plan_tab(c, cx)]
             .into_iter()
             .flatten()
             .collect();
         if pills.is_empty() {
-            return None;
+            return Vec::new();
         }
         let (outer, edge) = (hsla(c.outer), hsla(c.outer_edge));
         let step = div().flex_none().mr(px(-EDGE)).size(px(16.)).child(
@@ -1816,9 +1817,15 @@ impl AgentTab {
             )
             .size_full(),
         );
-        let shell = self.marked(
-            "corner-tabs",
-            self.plan_tab_shell(
+        // Over the chat, its right edge on the box's: hung inside the tab (inside its 1 pt
+        // edge) at the pills' top, so it sits where the plan's always did.
+        let popover = match self.menu {
+            Some(BoxMenu::Plan) => Some(self.plan_popover(c, cx)),
+            Some(BoxMenu::Shells) => Some(self.shells_popover(c, cx)),
+            _ => None,
+        };
+        let shell = self
+            .plan_tab_shell(
                 div()
                     .flex()
                     .gap(px(PILL_GAP))
@@ -1826,26 +1833,13 @@ impl AgentTab {
                     .into_any_element(),
                 outer,
                 edge,
-            ),
-        );
-        // Over the chat, its right edge on the box's: hung from the group's top right, the
-        // pills' top (`TAB_PAD` in), so it sits where the plan's always did.
-        let popover = match self.menu {
-            Some(BoxMenu::Plan) => Some(self.plan_popover(c, cx)),
-            Some(BoxMenu::Shells) => Some(self.shells_popover(c, cx)),
-            _ => None,
-        };
-        Some(
-            div()
-                .relative()
-                .flex_none()
-                .flex()
-                .items_end()
-                .child(step)
-                .child(shell)
-                .children(popover.map(|p| div().absolute().top(px(TAB_PAD)).right_0().child(p)))
-                .into_any_element(),
-        )
+            )
+            .relative()
+            .children(popover.map(|p| div().absolute().top(px(TAB_PAD - EDGE)).right_0().child(p)));
+        vec![
+            step.into_any_element(),
+            self.marked("corner-tabs", shell).into_any_element(),
+        ]
     }
 
     /// One pill of the corner tabs (the plan's `☰ 4/6`, the shells' `▣ 1/3`): `icon` and

@@ -223,7 +223,14 @@ impl AgentTab {
         let content = self
             .marked("shells-popover", div().child(content))
             .into_any_element();
-        self.menu_frame_at(Some(content), None, SHELLS_WIDTH, MenuPlace::Right(0.), cx)
+        // Hung inside the corner tab's edge (`corner_tabs`): out by that edge to the box's.
+        self.menu_frame_at(
+            Some(content),
+            None,
+            SHELLS_WIDTH,
+            MenuPlace::Right(crate::card_view::EDGE),
+            cx,
+        )
     }
 
     /// One shell's row: its mark, description and time, ■ while it runs; under them its

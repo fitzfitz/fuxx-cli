@@ -1994,6 +1994,17 @@ impl AgentTab {
         this
     }
 
+    /// The background shells changed by `f` (chore 16's scenes date them back).
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_shells(
+        &mut self,
+        f: impl FnOnce(&mut Vec<crate::agent_shells::Shell>),
+        cx: &mut Context<Self>,
+    ) {
+        self.conversation.shot_shells(f);
+        self.after_change(true, cx);
+    }
+
     /// Decoded events, into the same path a process line takes (R12).
     #[cfg(feature = "ui-shots")]
     pub fn shot_feed(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {

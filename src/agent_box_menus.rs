@@ -816,7 +816,7 @@ impl AgentTab {
             Some(content),
             None,
             crate::agent_box::PLAN_WIDTH,
-            MenuPlace::Right(0.),
+            MenuPlace::Right(crate::card_view::EDGE),
             cx,
         )
     }

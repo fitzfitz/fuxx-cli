@@ -1385,6 +1385,21 @@ impl Conversation {
         &mut self.shells
     }
 
+    /// Scenes: the shells changed by `f` (dated back, given last lines), their rows drawn again.
+    #[cfg(feature = "ui-shots")]
+    pub fn shot_shells(&mut self, f: impl FnOnce(&mut Vec<crate::agent_shells::Shell>)) {
+        f(self.shells.list_mut());
+        let calls: Vec<String> = self
+            .shells
+            .list_mut()
+            .iter()
+            .map(|s| s.call.clone())
+            .collect();
+        for call in calls {
+            self.touch_call(&call);
+        }
+    }
+
     /// Tool call `call`'s row is drawn again (its shell started or ended).
     fn touch_call(&mut self, call: &str) {
         if let Some(ix) = self.items.tool_index(call) {

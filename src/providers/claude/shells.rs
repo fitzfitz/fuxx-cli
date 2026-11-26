@@ -304,6 +304,20 @@ mod tests {
         assert!(t.decode(&notify("completed", "done", "")).is_empty());
     }
 
+    /// A background `cargo test` only started: its call's result is no pass (the status line
+    /// said "checks pass" while it ran).
+    #[test]
+    fn a_background_check_has_no_outcome_yet() {
+        use crate::agent_activity::Outcome;
+        let mut t = CLAUDE.translator();
+        let ev = one_shell(&mut t, true);
+        let check = ev.iter().rev().find_map(|e| match e {
+            Event::Activity { id, activity } if id == "toolu_a" => activity.check.clone(),
+            _ => None,
+        });
+        assert_eq!(check.map(|c| c.outcome), Some(Outcome::Unknown));
+    }
+
     #[test]
     fn stop_shell_writes_stop_task() {
         let mut t = CLAUDE.translator();
