@@ -44,6 +44,15 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — v0.13.9 released
+
+- **What:** your words: "build 17 to 21 and release with 16", then 22 and 23 added the same way. Version 0.13.9
+  (`9bf513e`), tag `v0.13.9`, Release run 45761162201: test, both slices and the release job green; "fuxx 0.13.9"
+  is the latest release with `fuxx-0.13.9.zip` (32 MB). It carries chores 16–23: background shells beside the tasks
+  tab, one working mark, the left step fix, subagents in a corner tab, the plan tab ticking chore-named commits, no
+  empty band at the top, the status line's chips, and the tighter plan card with no overlap.
+- **Next task:** your on-screen checks (note 93, chores 16–23).
+
 ### 2026-11-26 — Chores 17–23: one mark, the subagents tab, chips on the status row, a tighter plan card
 
 - **Did:** seven chores on master (note 93). 17: one working mark (the folder tab's hides while the status line
