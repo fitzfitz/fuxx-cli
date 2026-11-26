@@ -86,12 +86,12 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// How many files the turn changed under `root`, the tab's folder (chore 36: an agent's log
-    /// in /tmp isn't the project's).
-    pub fn changed_in(&self, root: &Path) -> usize {
+    /// How many files the turn changed in the project (`roots`: the tab's folder,
+    /// `changed_files::project_roots`; chore 36: an agent's log in /tmp isn't the project's).
+    pub fn changed_in(&self, roots: &[PathBuf]) -> usize {
         self.changed
             .iter()
-            .filter(|c| c.path.starts_with(root))
+            .filter(|c| crate::changed_files::in_project(&c.path, roots))
             .count()
     }
 }
@@ -686,7 +686,7 @@ mod tests {
         let l = main_of(&c);
         assert_eq!(l.failing, Some(CheckWhat::Build));
         assert_eq!(
-            crate::agent_status_line::chips(&l, Path::new(CWD))
+            crate::agent_status_line::chips(&l, &[PathBuf::from(CWD)])
                 .last()
                 .map(|c| c.text.as_str()),
             Some("build")

@@ -186,8 +186,12 @@ fn line_count(path: &Path) -> Option<u32> {
 /// The files `ledger`'s turn touched, as rows under their folders (each folder once, the top's
 /// first, then case-blind; files by name): those it changed, those scripts touched and those it
 /// only read, all in one grouping (chore 36: grouped apart, a folder came back once per kind);
-/// those outside `cwd` apart, under their full folder.
-pub fn files_list(ledger: &Ledger, facts: &HashMap<PathBuf, FileFacts>, cwd: &Path) -> FilesList {
+/// those outside the project (`roots`, `project_roots`) apart, under their full folder.
+pub fn files_list(
+    ledger: &Ledger,
+    facts: &HashMap<PathBuf, FileFacts>,
+    roots: &[PathBuf],
+) -> FilesList {
     let (scripted, read) = (
         kept_paths(&ledger.scripted, facts),
         kept_paths(&ledger.read, facts),
@@ -196,11 +200,30 @@ pub fn files_list(ledger: &Ledger, facts: &HashMap<PathBuf, FileFacts>, cwd: &Pa
         .chain(plain_rows(&scripted, facts, How::Script))
         .chain(plain_rows(&read, facts, How::Read));
     let (inside, outside): (Vec<FileRow>, Vec<FileRow>) =
-        rows.partition(|r| r.path.starts_with(cwd));
+        rows.partition(|r| in_project(&r.path, roots));
     FilesList {
-        inside: grouped(inside.into_iter(), cwd),
-        outside: grouped(outside.into_iter(), cwd),
+        inside: grouped(inside.into_iter(), roots),
+        outside: grouped(outside.into_iter(), roots),
     }
+}
+
+/// The project's folders (chore 36): the tab's `cwd` without its `.` and `..`, and its real
+/// path (`real`, read off the UI thread) when that differs: an agent may write either
+/// (`/tmp/x` is `/private/tmp/x`).
+pub fn project_roots(cwd: &Path, real: Option<&Path>) -> Vec<PathBuf> {
+    let folder = crate::agent_steps::file_key(".", cwd);
+    let mut roots = vec![folder];
+    if let Some(real) = real
+        && !roots.iter().any(|r| r == real)
+    {
+        roots.push(real.to_path_buf());
+    }
+    roots
+}
+
+/// Whether `path` is in the project (under one of its `roots`).
+pub fn in_project(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|r| path.starts_with(r))
 }
 
 /// The files the turn changed, as rows. The ledger's own +/− win; `facts` fill what it doesn't
@@ -286,14 +309,15 @@ fn file_name(path: &Path) -> String {
     )
 }
 
-/// Rows under their folder relative to `cwd` (outside it: the folder as it is), each folder
+/// Rows under their folder relative to the project (`roots`; outside it: the folder as it is), each folder
 /// once, in order case-blind with the top's (`""`) first, files by name.
-fn grouped(rows: impl Iterator<Item = FileRow>, cwd: &Path) -> Vec<Group> {
+fn grouped(rows: impl Iterator<Item = FileRow>, roots: &[PathBuf]) -> Vec<Group> {
     let mut by: std::collections::BTreeMap<(String, String), Vec<FileRow>> = Default::default();
     for row in rows {
         let parent = row.path.parent().unwrap_or(Path::new(""));
-        let folder = parent
-            .strip_prefix(cwd)
+        let folder = roots
+            .iter()
+            .find_map(|r| parent.strip_prefix(r).ok())
             .unwrap_or(parent)
             .to_string_lossy()
             .into_owned();
@@ -343,7 +367,7 @@ mod tests {
         facts: &HashMap<PathBuf, FileFacts>,
         cwd: &Path,
     ) -> Vec<Group> {
-        grouped(changed_rows(c, facts), cwd)
+        grouped(changed_rows(c, facts), &[cwd.to_path_buf()])
     }
 
     fn plain_groups(
@@ -351,7 +375,7 @@ mod tests {
         facts: &HashMap<PathBuf, FileFacts>,
         cwd: &Path,
     ) -> Vec<Group> {
-        grouped(plain_rows(paths, facts, How::Read), cwd)
+        grouped(plain_rows(paths, facts, How::Read), &[cwd.to_path_buf()])
     }
 
     fn names(groups: &[Group]) -> Vec<(String, Vec<String>)> {
@@ -599,7 +623,7 @@ mod tests {
             &["src/agent_lanes.rs"],
         );
         let facts = facts_of(&["src/agent_box.rs", "src/agent_lanes.rs"]);
-        let list = files_list(&l, &facts, Path::new(CWD));
+        let list = files_list(&l, &facts, &[PathBuf::from(CWD)]);
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert_eq!(
             names(&list.inside),
@@ -621,7 +645,7 @@ mod tests {
     #[test]
     fn folders_sort_case_blind() {
         let l = ledger(&["Docs/a.md", "assets/x.svg", "README.md"], &[], &[]);
-        let list = files_list(&l, &HashMap::new(), Path::new(CWD));
+        let list = files_list(&l, &HashMap::new(), &[PathBuf::from(CWD)]);
         let folders: Vec<&str> = list.inside.iter().map(|g| g.folder.as_str()).collect();
         assert_eq!(folders, ["", "assets", "Docs"]);
     }
@@ -638,7 +662,7 @@ mod tests {
                 minus: None,
             });
         }
-        let list = files_list(&l, &HashMap::new(), Path::new(CWD));
+        let list = files_list(&l, &HashMap::new(), &[PathBuf::from(CWD)]);
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert_eq!(names(&list.inside), [("src".into(), s(&["api.rs"]))]);
         assert_eq!(
@@ -649,5 +673,35 @@ mod tests {
             ]
         );
         assert_eq!(total(&list.inside).0, 1);
+    }
+
+    /// The review of chore 36: a tab whose folder is a symlink (`/tmp` is `/private/tmp`), or
+    /// written with a `..`, while the agent writes the real path: its files are the project's,
+    /// shown from the folder, and counted.
+    #[test]
+    fn a_symlinked_project_folder_still_holds_its_files() {
+        let base = fresh("fuxx-test-changed-symlink");
+        let real = base.join("real-app");
+        fs::create_dir_all(real.join("src")).unwrap();
+        let link = base.join("my-app");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let real = real.canonicalize().unwrap();
+        let roots = project_roots(&link, Some(&real));
+        let mut l = ledger(&[], &[], &[]);
+        l.changed.push(Changed {
+            path: real.join("src/api.rs"),
+            plus: Some(1),
+            minus: None,
+        });
+        let list = files_list(&l, &HashMap::new(), &roots);
+        assert_eq!(
+            names(&list.inside),
+            [("src".into(), vec!["api.rs".to_string()])]
+        );
+        assert!(list.outside.is_empty());
+        assert_eq!(l.changed_in(&roots), 1);
+        // A `..` in the tab's folder.
+        let dotted = project_roots(Path::new("/w/x/../my-app"), None);
+        assert_eq!(dotted, [PathBuf::from("/w/my-app")]);
     }
 }

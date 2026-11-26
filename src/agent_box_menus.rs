@@ -733,7 +733,7 @@ impl AgentTab {
             Some(BoxMenu::Ledger) => {
                 !self.status_line_shown()
                     || self.ledger.as_ref().is_none_or(|l| {
-                        crate::agent_status_line::chips(l, &self.start.cwd).is_empty()
+                        crate::agent_status_line::chips(l, &self.project_roots()).is_empty()
                     })
             }
             _ => false,

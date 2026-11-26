@@ -57,7 +57,7 @@ impl AgentTab {
         let Some(ledger) = self.ledger.as_ref() else {
             return;
         };
-        let list = files_list(ledger, &self.ledger_facts, &self.start.cwd);
+        let list = files_list(ledger, &self.ledger_facts, &self.project_roots());
         let (files, plus, minus) = total(&list.inside);
         if !list.inside.is_empty() {
             let count = div()
@@ -206,9 +206,11 @@ impl AgentTab {
         } else {
             ui.text
         };
-        let label = file
-            .path
-            .strip_prefix(&self.start.cwd)
+        // Probed by its path from the project (the scenes read the popover's rows).
+        let label = self
+            .project_roots()
+            .iter()
+            .find_map(|r| file.path.strip_prefix(r).ok())
             .unwrap_or(&file.path)
             .to_string_lossy()
             .into_owned();

@@ -1635,6 +1635,9 @@ pub struct AgentTab {
     pub(crate) ledger_facts: std::collections::HashMap<PathBuf, crate::changed_files::FileFacts>,
     ledger_facts_for: Vec<PathBuf>,
     ledger_facts_gen: u64,
+    /// The tab's folder and its real path, read with the ledger's facts (chore 36's review: an
+    /// agent may write a symlinked folder's real path).
+    project_real: Option<(PathBuf, PathBuf)>,
     /// The ledger popover's folded folders (their header's click).
     pub(crate) ledger_folded: std::collections::HashSet<String>,
     /// When the branch was last read for the chip, and a read waiting for its turn.
@@ -2428,6 +2431,7 @@ impl AgentTab {
             ledger_facts: Default::default(),
             ledger_facts_for: Vec::new(),
             ledger_facts_gen: 0,
+            project_real: None,
             ledger_folded: Default::default(),
             branch_read_at: None,
             branch_read_queued: false,
@@ -6056,7 +6060,7 @@ impl AgentTab {
         let chips = self
             .ledger
             .as_ref()
-            .map(|l| chips(l, &self.start.cwd))
+            .map(|l| chips(l, &self.project_roots()))
             .unwrap_or_default();
         Some((main, chips))
     }
@@ -6083,6 +6087,17 @@ impl AgentTab {
         live && self.view == crate::agent_lanes::View::Main
     }
 
+    /// The project's folders (`changed_files::project_roots`): the tab's folder, and its real
+    /// path once read.
+    pub(crate) fn project_roots(&self) -> Vec<PathBuf> {
+        let real = self
+            .project_real
+            .as_ref()
+            .filter(|(cwd, _)| *cwd == self.start.cwd)
+            .map(|(_, real)| real.as_path());
+        crate::changed_files::project_roots(&self.start.cwd, real)
+    }
+
     /// What git and the disk say of the turn's files, read again off the UI thread when the
     /// ledger's paths (changed, scripted, read) differ from those last asked about.
     fn refresh_ledger_facts(&mut self, cx: &mut Context<Self>) {
@@ -6101,14 +6116,16 @@ impl AgentTab {
         self.ledger_facts_gen += 1;
         let generation = self.ledger_facts_gen;
         let root = self.start.cwd.clone();
-        let read = cx
-            .background_executor()
-            .spawn(async move { crate::changed_files::read_facts(&root, &paths) });
+        let read = cx.background_executor().spawn(async move {
+            let real = root.canonicalize().ok().map(|real| (root.clone(), real));
+            (crate::changed_files::read_facts(&root, &paths), real)
+        });
         cx.spawn(async move |this, cx| {
-            let facts = read.await;
+            let (facts, real) = read.await;
             this.update(cx, |this, cx| {
                 if generation == this.ledger_facts_gen {
                     this.ledger_facts = facts;
+                    this.project_real = real;
                     cx.notify();
                 }
             })

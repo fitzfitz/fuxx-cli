@@ -131,13 +131,13 @@ pub struct Chip {
     pub text: String,
 }
 
-/// The status row's chips (chore 22): `N changed` once a file under `root` (the tab's folder)
-/// changed (chore 36: those outside it aren't counted); the checks once one ran or runs —
-/// running (the arc) while one runs, failing (red, what fails), passing, or ran.
-pub fn chips(ledger: &Ledger, root: &std::path::Path) -> Vec<Chip> {
+/// The status row's chips (chore 22): `N changed` once a file in the project (`roots`, the
+/// tab's folder) changed (chore 36: those outside it aren't counted); the checks once one ran
+/// or runs — running (the arc) while one runs, failing (red, what fails), passing, or ran.
+pub fn chips(ledger: &Ledger, roots: &[std::path::PathBuf]) -> Vec<Chip> {
     use crate::agent_activity::CheckWhat;
     let mut out = Vec::new();
-    let changed = ledger.changed_in(root);
+    let changed = ledger.changed_in(roots);
     if changed > 0 {
         out.push(Chip {
             kind: ChipKind::Changed,
@@ -370,7 +370,7 @@ mod tests {
     const ROOT: &str = "/tmp/fx/code/my-app";
 
     fn chips_in(ledger: &Ledger) -> Vec<Chip> {
-        chips(ledger, std::path::Path::new(ROOT))
+        chips(ledger, &[ROOT.into()])
     }
 
     /// Chore 36: a file outside the tab's folder (an agent's log in /tmp) isn't counted; with
