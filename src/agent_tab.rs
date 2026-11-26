@@ -73,6 +73,9 @@ mod ask_view;
 #[path = "agent_plan_card.rs"]
 mod plan_card;
 
+#[path = "agent_card_parts.rs"]
+mod card_parts;
+
 #[path = "agent_shells_view.rs"]
 mod shells_view;
 

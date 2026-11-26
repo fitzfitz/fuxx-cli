@@ -3828,12 +3828,27 @@ fn paint_cards(
                     }
                     if let Some(panel) = panel {
                         if let Some(fold) = &panel.fold {
+                            // Chore 30: its chevron (an icon at the words' size, in their
+                            // colour) before the words.
+                            let side = f32::from(meta);
+                            let chevron = Bounds::new(
+                                point(px(text_x), px(panel.y) + (m.line_height - meta) / 2.0),
+                                size(meta, meta),
+                            );
+                            let _ = window.paint_svg(
+                                chevron,
+                                fold.chevron.path().into(),
+                                None,
+                                Default::default(),
+                                hsla(p.ui.text_dim),
+                                cx,
+                            );
                             paint_words(
-                                fold,
-                                &[(fold.len(), p.ui.text_dim)],
+                                &fold.words,
+                                &[(fold.words.len(), p.ui.text_dim)],
                                 ui_font.clone(),
                                 meta,
-                                point(px(text_x), px(panel.y)),
+                                point(px(text_x + side + 4.0), px(panel.y)),
                                 m.line_height,
                                 window,
                                 cx,

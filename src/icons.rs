@@ -44,6 +44,8 @@ pub enum Icon {
     Revert,
     ChevronRight,
     ChevronDown,
+    /// A card's "Show less" (chore 30, note 93).
+    ChevronUp,
     Wrap,
     OpenExternal,
     ChangeUp,
@@ -103,7 +105,7 @@ pub enum Icon {
 
 impl Icon {
     #[cfg(test)]
-    pub const ALL: [Icon; 67] = [
+    pub const ALL: [Icon; 68] = [
         Icon::Terminal,
         Icon::Globe,
         Icon::File,
@@ -133,6 +135,7 @@ impl Icon {
         Icon::Revert,
         Icon::ChevronRight,
         Icon::ChevronDown,
+        Icon::ChevronUp,
         Icon::Wrap,
         Icon::OpenExternal,
         Icon::ChangeUp,
@@ -205,6 +208,7 @@ impl Icon {
             Icon::Revert => "icons/lucide/undo-2.svg",
             Icon::ChevronRight => "icons/lucide/chevron-right.svg",
             Icon::ChevronDown => "icons/lucide/chevron-down.svg",
+            Icon::ChevronUp => "icons/lucide/chevron-up.svg",
             Icon::Wrap => "icons/lucide/wrap-text.svg",
             Icon::OpenExternal => "icons/lucide/external-link.svg",
             Icon::ChangeUp => "icons/lucide/arrow-up.svg",
@@ -248,7 +252,7 @@ impl Icon {
 }
 
 /// The embedded files, by asset path.
-const FILES: [(&str, &[u8]); 65] = [
+const FILES: [(&str, &[u8]); 66] = [
     (
         "icons/shapes/tab-step-fill.svg",
         include_bytes!("../assets/icons/shapes/tab-step-fill.svg"),
@@ -364,6 +368,10 @@ const FILES: [(&str, &[u8]); 65] = [
     (
         "icons/lucide/chevron-down.svg",
         include_bytes!("../assets/icons/lucide/chevron-down.svg"),
+    ),
+    (
+        "icons/lucide/chevron-up.svg",
+        include_bytes!("../assets/icons/lucide/chevron-up.svg"),
     ),
     (
         "icons/lucide/chevron-left.svg",

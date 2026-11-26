@@ -749,13 +749,35 @@ pub enum Draw {
     },
 }
 
-/// A card's output panel: its box, the fold row's words (none when not long enough to fold),
-/// and the rows in view.
+/// A card's output panel: its box, the fold row (none when not long enough to fold), and the
+/// rows in view.
 #[derive(Clone, Debug)]
 pub struct Panel {
     pub y: f32,
-    pub fold: Option<String>,
+    pub fold: Option<Fold>,
     pub rows: Rows,
+}
+
+/// A fold row: its words and the chevron drawn before them (chore 30: an icon, not a glyph).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fold {
+    pub words: String,
+    pub chevron: crate::icons::Icon,
+}
+
+/// The fold row of an output with `hidden` lines folded away (0: open, it folds back).
+pub fn fold_of(hidden: usize) -> Fold {
+    use crate::icons::Icon;
+    match hidden {
+        0 => Fold {
+            words: "Show less".into(),
+            chevron: Icon::ChevronUp,
+        },
+        n => Fold {
+            words: format!("{n} earlier lines"),
+            chevron: Icon::ChevronRight,
+        },
+    }
 }
 
 /// What a frame paints (the column's height is kept in `CardsState::total`).
@@ -848,10 +870,7 @@ pub fn frame<L: EventListener>(
                 let panel = card.output.map(|output| {
                     let lines = count(output.0, output.1);
                     let s = shown(output, open);
-                    let fold = (lines > FOLD_OVER).then(|| match s.hidden {
-                        0 => "▾ Show less".to_string(),
-                        n => format!("▸ {n} earlier lines"),
-                    });
+                    let fold = (lines > FOLD_OVER).then(|| fold_of(s.hidden));
                     // The output under the command, in the same surface (no panel of its own).
                     let panel_y = cmd_y + cmd_lines as f32 * line_h + OUT_GAP;
                     let rows_y = panel_y + if fold.is_some() { line_h } else { 0.0 };
@@ -1436,6 +1455,27 @@ mod tests {
             failed: false,
             outcome: Outcome::Ok,
         }
+    }
+
+    /// Chore 30: the fold row's words carry no arrow glyph; its chevron is an icon (up to fold
+    /// back, right to open the earlier lines).
+    #[test]
+    fn the_fold_row_is_words_and_a_chevron() {
+        use crate::icons::Icon;
+        assert_eq!(
+            fold_of(0),
+            Fold {
+                words: "Show less".into(),
+                chevron: Icon::ChevronUp
+            }
+        );
+        assert_eq!(
+            fold_of(12),
+            Fold {
+                words: "12 earlier lines".into(),
+                chevron: Icon::ChevronRight
+            }
+        );
     }
 
     #[test]

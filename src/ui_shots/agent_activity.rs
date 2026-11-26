@@ -1242,6 +1242,7 @@ pub(super) fn agent_plan_approved() {
         // Show less under it (only at its top).
         let line = part(cx, tab, n, "plan-answered");
         assert!(line.size.height <= px(40.), "{n}: one line ({line:?})");
+        chevron_ends(n, cx, tab, "plan-show");
         click(cx, window, part(cx, tab, n, "plan-show"));
         cx.read(|cx| {
             tab.read(cx)
@@ -1315,6 +1316,21 @@ pub(super) fn agent_plan_approved_auto() {
             )))
         });
     });
+}
+
+/// Chore 30: link `name` ends in its chevron icon (no glyph): inside it, at its right, on its
+/// words' line and no taller than them.
+fn chevron_ends(n: &str, cx: &VisualTestAppContext, tab: &Entity<AgentTab>, name: &str) {
+    let link = part(cx, tab, n, name);
+    let chevron = part(cx, tab, n, "fold-chevron");
+    assert!(
+        link.contains(&chevron.center()) && (link.right() - chevron.right()).abs() <= px(1.),
+        "{n}: {name} ends in its chevron ({chevron:?} in {link:?})"
+    );
+    assert!(
+        chevron.size.height <= link.size.height + px(0.5) && chevron.size.width >= px(9.),
+        "{n}: the words' size ({chevron:?})"
+    );
 }
 
 /// Claude's turn after a plan approved into `mode`: it reports the mode, edits two files and

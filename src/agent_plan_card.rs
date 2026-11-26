@@ -9,7 +9,8 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, canvas, div, prelude::FluentBuilder, px,
 };
 
-use super::{AgentTab, Look, Refocus, button, on_tab};
+use super::card_parts::slim_button;
+use super::{AgentTab, Look, Refocus, on_tab};
 use crate::agent_chat::chat;
 use crate::agent_conversation::Answer;
 use crate::agent_markdown::{Md, Span};
@@ -133,12 +134,16 @@ impl AgentTab {
                         .child(SharedString::from(super::plan_answer_line(answer))),
                 )
                 .child(div().flex_1())
-                .child(
-                    self.marked("plan-show", div())
-                        .flex_none()
-                        .text_color(hsla(c.dim))
-                        .child("Show plan \u{203a}"),
-                );
+                .child(self.marked(
+                    "plan-show",
+                    self.fold_link(
+                        SharedString::from(format!("plan-show-{ix}")),
+                        "Show plan",
+                        Icon::ChevronRight,
+                        hsla(c.dim),
+                        meta,
+                    ),
+                ));
             return self.marked("plan-answered", el).into_any_element();
         }
         let waiting = answer.is_none();
@@ -149,15 +154,9 @@ impl AgentTab {
         let long = plan_is_long(&plan.markdown);
         let folded = long && !open;
         let outline = plan_outline(&blocks);
-        let link = |words: &'static str, id: String| {
-            div()
-                .id(SharedString::from(id))
-                .flex_none()
-                .text_size(px(meta))
+        let link = |words: &'static str, chevron: Icon, id: String| {
+            self.fold_link(SharedString::from(id), words, chevron, hsla(c.accent), meta)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(hsla(c.accent))
-                .cursor_pointer()
-                .child(words)
         };
         let dot = || div().flex_none().text_color(hsla(c.dim)).child("\u{b7}");
         // The header, one line: ☰ "<agent>'s plan" · the file (↗ opens it) · its steps, and
@@ -228,7 +227,7 @@ impl AgentTab {
                     d.child(
                         self.marked(
                             "plan-less-top",
-                            link("Show less \u{25b4}", format!("plan-less-top-{ix}"))
+                            link("Show less", Icon::ChevronUp, format!("plan-less-top-{ix}"))
                                 .on_click(toggle_clone(&look.view, id, ix)),
                         ),
                     )
@@ -300,14 +299,11 @@ impl AgentTab {
             div().px(px(PAD)).pt(px(4.)).child(
                 self.marked(
                     "plan-more",
-                    link(
-                        if open {
-                            "Show less \u{25b4}"
-                        } else {
-                            "Show all \u{25be}"
-                        },
-                        format!("plan-more-{ix}"),
-                    )
+                    if open {
+                        link("Show less", Icon::ChevronUp, format!("plan-more-{ix}"))
+                    } else {
+                        link("Show all", Icon::ChevronDown, format!("plan-more-{ix}"))
+                    }
                     .on_click(toggle),
                 ),
             )
@@ -363,13 +359,12 @@ impl AgentTab {
     fn plan_buttons(&self, ix: usize, look: &Look) -> gpui::Div {
         let id = "plan";
         let c = &look.c;
-        let slim = |b: gpui::Stateful<gpui::Div>| b.h(px(24.)).px(px(10.)).flex_none();
-        let approve = slim(button(
+        let approve = slim_button(
             SharedString::from(format!("{id}-approve-auto")),
             "Approve \u{b7} auto-accept  \u{23ce}",
             true,
             c,
-        ))
+        )
         .on_click(on_tab(&look.view, move |this, cx| {
             this.answer_plan(ix, Answer::AlwaysAllowed, cx);
         }));
@@ -389,12 +384,12 @@ impl AgentTab {
                 d.child(
                     self.marked(
                         "plan-approve-into",
-                        slim(button(
+                        slim_button(
                             SharedString::from(format!("{id}-approve-into")),
                             SharedString::from(format!("Approve \u{b7} {label} mode")),
                             false,
                             c,
-                        ))
+                        )
                         .on_click(on_tab(&look.view, move |this, cx| {
                             this.answer_plan(ix, answer.clone(), cx);
                         })),
@@ -402,12 +397,12 @@ impl AgentTab {
                 )
             })
             .child(
-                slim(button(
+                slim_button(
                     SharedString::from(format!("{id}-approve-each")),
                     "Approve",
                     false,
                     c,
-                ))
+                )
                 .on_click(on_tab(&look.view, move |this, cx| {
                     this.answer_plan(ix, Answer::Allowed, cx);
                 })),
@@ -415,7 +410,7 @@ impl AgentTab {
             .child(
                 self.marked("plan-keep-planning", div())
                     .id(SharedString::from(format!("{id}-keep-planning")))
-                    .h(px(24.))
+                    .h(px(super::card_parts::SLIM_H))
                     .px(px(8.))
                     .flex()
                     .items_center()
