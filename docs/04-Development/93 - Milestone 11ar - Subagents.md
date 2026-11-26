@@ -1666,3 +1666,10 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
   icon (ChevronDown / ChevronRight from src/icons.rs; add Lucide's chevron-up for "Show less"), the same size and
   colour as the link's text, and the same in chores 25 and 23's new rows. Keyboard legends (`← →`) and the `→` in
   the answer text sent to the agent stay as they are. Pin one fold link per card in its scene.
+- **Chore 31 (queued, not built): only the status line spins** (your words, 2026-11-26, with a picture of three
+  spinners at once — the chat's "Cultivating…", the box's "To <subagent> · via Main" chip, and the 🤖 corner tab:
+  "in here still too much loading indicator" → my sketch → "yes, build 31 too and release with the rest").
+  Follows chore 17. While the chat's status line shows, it is the only running mark: the "To … · via Main" chip
+  shows the static 🤖 icon (it says where your message goes, not that work runs); the 🤖 corner tab shows only its
+  `done/all` count, its arc back only while the status line isn't shown (e.g. scrolled away). Pin it in a scene
+  with a running subagent and the relay chip.
