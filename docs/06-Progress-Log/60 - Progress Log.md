@@ -44,6 +44,16 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-26 — Chore 37: a long question no longer runs off the card's edge
+
+- **What:** your picture of a question card whose second line ran past its edge ("offside"). Cause: the compact
+  dock clamped the question to two lines without an ellipsis (GPUI then stops wrapping at line 2), and GPUI's
+  wrapped-line cache, keyed without the clamp, handed that layout to the chat's card. The clamp now ends in "…"
+  (also the mode menu's description). New scene `agent-tab-question-dock-long`. Commit `34fed8c`.
+- **Checks:** tests 3043 green, clippy unchanged (none in the files touched), fmt clean; `--changed` scenes 98
+  passed, 0 failed; the new scene fails without the fix.
+- **Next:** your on-screen check (note 93, chore 37).
+
 ### 2026-11-26 — v0.13.11 released
 
 - **What:** your words: "release it". Version 0.13.11 (`4bd8fe0`), tag `v0.13.11`, Release run 45833649549: test,

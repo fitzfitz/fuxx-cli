@@ -1852,3 +1852,19 @@ The chore batch of 2026-11-24 and its four minors (below) are **released in v0.1
     line, compact rows, mono paths); a folder shows once; an agent's /tmp log sits dimmed at the bottom and isn't
     counted; a check run twice shows one mark; on the next plan built here, the ☰ popover's ◐ is the task whose
     files are being changed.
+- **Chore 37: a long question no longer runs off the card's edge** (your words, 2026-11-26, with a picture of a
+  question card whose second line ran past its right edge: "offside"). **Cause:** the compact dock (a card too tall
+  to dock whole) clamps the question to two lines, but with no ellipsis. A bare `line_clamp` in GPUI stops wrapping
+  at the last line, so line 2 holds the rest of the question, unwrapped. GPUI's wrapped-line cache keys a layout
+  by text, size, runs and width but not the clamp, so the chat's card (same words, same width) drew the dock's
+  two-line layout: your picture. It goes the other way too: a dock shown after the card drew the card's whole
+  layout. **Built:** the dock's clamp ends in "…" (`text_ellipsis`): GPUI then cuts the words to fit two lines, a
+  different text with its own cache entry. The mode menu's two-line description, the only other bare clamp, got the
+  same. Scene `agent-tab-question-dock-long` (new): asked while you're scrolled away, the compact dock shows two
+  lines ending in "…"; back in sight, the card's question wraps whole (it measured two lines before the fix); away
+  again, the dock is two lines still. Commit `34fed8c`.
+  - **Checks:** tests 3043 green; clippy (both runs) unchanged at 35, none in the files touched; `cargo fmt --check`
+    clean; scenes since `HEAD` (`--changed`): 98 passed, 0 failed; the new scene fails with the fix taken out. The
+    visual fingerprints (`tests/ui-shots-ref`) were not refreshed.
+  - [ ] Your check: a long question (three lines or more) asked while you're reading further up docks as two lines
+    ending in "…"; scrolled back to it, the card's question wraps inside the card.
