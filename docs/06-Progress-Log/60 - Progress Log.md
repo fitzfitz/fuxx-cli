@@ -44,6 +44,13 @@ Copy [[61 - Log Entry Template]] to the top of the "Entries" section below and f
 
 ## Entries
 
+### 2026-11-25 — v0.13.8 released
+
+- **What:** your words: "yes, release it". Version 0.13.8 (`92c3785`), tag `v0.13.8`, Release run 45631368608: test,
+  both slices and the release job green; "fuxx 0.13.8" is the latest release with `fuxx-0.13.8.zip` (32 MB). It
+  carries chore 15 (the plan tab follows a plan built in another repo) and the landing page's Plan card scenes.
+- **Next task:** your on-screen checks (note 93).
+
 ### 2026-11-25 — Chore 16: background shells beside the tasks tab
 
 - **Did:** Claude's background shells now show in a `▣ done/all` tab beside the plan tab. Its popover gives each
