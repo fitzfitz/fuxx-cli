@@ -69,7 +69,6 @@ pub mod code {
     pub const NOTE_MORE_GAP: f32 = 8.0;
 }
 
-/// The agent chat (chores after M11ab, the lead designer's spec B-B).
 /// Text inputs (chore 29, note 93: "make it has small padding inside so its neat"): the space
 /// between a framed field's edge and its text and caret, set once where the field draws its
 /// frame (`NameInput`; the boxes that frame a bare one pad themselves).
@@ -78,6 +77,7 @@ pub mod input {
     pub const PAD_Y: f32 = 2.0;
 }
 
+/// The agent chat (chores after M11ab, the lead designer's spec B-B).
 pub mod chat {
     /// The conversation's column at most (avatar included), centred in the tab; the agent box
     /// under it as wide (centred since 2026-11-22, your words: "put it at center").

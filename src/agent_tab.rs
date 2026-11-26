@@ -5916,7 +5916,12 @@ impl AgentTab {
         let (status, stopping) = (self.shown_status(), self.stopping.is_some());
         // One working mark (chore 17, your pick B; chore 31: also a live subagent's view): while
         // the chat's mark shows, its spinner is the mark; the tab gets its own back when it goes.
-        if (status == Status::Idle && !stopping) || self.chat_mark_shown() {
+        let hidden = crate::agent_subagents::folder_mark_hidden(
+            self.status_line_shown(),
+            self.shown_lane().map(|l| l.status.live()),
+            status == Status::Waiting,
+        );
+        if (status == Status::Idle && !stopping) || hidden {
             return None;
         }
         let clock_now = Instant::now();

@@ -18,6 +18,13 @@ pub fn chat_mark_shown(status_line: bool, lane_live: Option<bool>) -> bool {
     status_line || lane_live == Some(true)
 }
 
+/// Whether the folder tab's status mark hides (chores 17 and 31): while the chat shows the
+/// running mark, except a wait on you (`waiting`) in a subagent's view, where nothing else says
+/// it (Main's status line, which would, isn't there).
+pub fn folder_mark_hidden(status_line: bool, lane_live: Option<bool>, waiting: bool) -> bool {
+    status_line || (lane_live == Some(true) && !waiting)
+}
+
 /// Whether the tab spins beside its count: a subagent runs and the chat shows no running mark.
 pub fn tab_spins(lanes: &[Lane], chat_mark: bool) -> bool {
     !chat_mark && lanes.iter().any(|l| l.status == LaneStatus::Working)
@@ -126,6 +133,30 @@ mod tests {
             !tab_spins(&[lane("a", LaneStatus::Waiting)], false),
             "waits: red, still"
         );
+    }
+
+    /// The review of chores 24–31: in a subagent's view the folder tab's mark is the only sign
+    /// that Main (or another subagent) waits on you, so it hides there only while work runs;
+    /// in Main the status line carries the question (chore 17).
+    #[test]
+    fn the_folder_mark_keeps_a_wait_in_a_subagent_view() {
+        assert!(
+            folder_mark_hidden(true, None, true),
+            "Main: the line says it"
+        );
+        assert!(
+            folder_mark_hidden(false, Some(true), false),
+            "a live view, working"
+        );
+        assert!(
+            !folder_mark_hidden(false, Some(true), true),
+            "a live view, one waits"
+        );
+        assert!(
+            !folder_mark_hidden(false, Some(false), false),
+            "a finished one's view"
+        );
+        assert!(!folder_mark_hidden(false, None, false));
     }
 
     fn six() -> Vec<Lane> {
