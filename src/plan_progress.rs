@@ -175,6 +175,87 @@ pub fn match_planned(
     }
 }
 
+/// Whether backticked `token` names a file: no spaces, a name, then a dot and a 1–5 letter
+/// extension (`src/retry.rs`, `registry.rs`; not `Icon::Bot`, `c.todo_active` or `.output`).
+fn file_token(token: &str) -> Option<&str> {
+    let path = token.split(':').next()?.trim();
+    let (stem, ext) = path.rsplit_once('.')?;
+    let name = stem.rsplit('/').next()?;
+    let ok = !path.contains(char::is_whitespace)
+        && !name.is_empty()
+        && (1..=5).contains(&ext.len())
+        && ext.chars().all(|c| c.is_ascii_alphabetic())
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c));
+    ok.then_some(path)
+}
+
+/// Each `### Task N` section's files (chore 20): the backticked paths it names (`**Files:**`,
+/// its steps), each once, in order.
+pub fn task_files(md: &str) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    for line in md.lines() {
+        if task_heading(line).is_some() {
+            out.push(Vec::new());
+            continue;
+        }
+        let Some(files) = out.last_mut() else {
+            continue;
+        };
+        // The odd pieces between backticks are the backticked ones.
+        for token in line.split('`').skip(1).step_by(2) {
+            if let Some(path) = file_token(token)
+                && !files.iter().any(|f| f == path)
+            {
+                files.push(path.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Whether a commit's changed `path` (from the repo's root) is the plan's `named` file: the
+/// same, or `named` its tail (a bare `registry.rs`).
+fn names_file(path: &str, named: &str) -> bool {
+    path == named || path.ends_with(&format!("/{named}"))
+}
+
+/// Marks done the tasks not done yet whose named files (`files`, by task) the commits since the
+/// plan (`commits`: hash and changed paths, newest first) touched, more than half of them, with
+/// the oldest commit that touched the most of them (chore 20: commits saying "Chore 16: …").
+pub fn match_files(
+    tasks: &mut [PlanTask],
+    commits: &[(String, Vec<String>)],
+    files: &[Vec<String>],
+) {
+    for (task, named) in tasks.iter_mut().zip(files) {
+        if named.is_empty() || matches!(task.state, TaskState::Done { .. }) {
+            continue;
+        }
+        let touches = |paths: &[String], f: &str| paths.iter().any(|p| names_file(p, f));
+        let touched = named
+            .iter()
+            .filter(|f| commits.iter().any(|(_, paths)| touches(paths, f)))
+            .count();
+        if touched * 2 <= named.len() {
+            continue;
+        }
+        // Of those touching the most, the oldest: the one that built it (later ones fix it).
+        let best = commits
+            .iter()
+            .rev()
+            .map(|(hash, paths)| (named.iter().filter(|f| touches(paths, f)).count(), hash))
+            .fold(None::<(usize, &String)>, |best, (n, hash)| match best {
+                Some((m, _)) if m >= n => best,
+                _ => Some((n, hash)),
+            });
+        task.state = TaskState::Done {
+            commit: best.map(|(_, hash)| hash.clone()),
+        };
+    }
+}
+
 /// Whether commit subject `subject` names task number `n` ("Task 3:", "Task 3 ", "task 3").
 fn names_task(subject: &str, n: usize) -> bool {
     let lower = subject.to_lowercase();
@@ -227,13 +308,60 @@ pub fn has_task_headings(md: &str) -> bool {
     md.lines().any(|l| task_heading(l).is_some())
 }
 
+/// A commit as the plan tab reads it: its short hash, subject, time (seconds since the epoch)
+/// and the paths it changed (from the repo's root).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitCommit {
+    pub hash: String,
+    pub subject: String,
+    pub at: i64,
+    pub files: Vec<String>,
+}
+
 /// The commits that can mark a plan's tasks: those made since the plan file was first there
-/// (`since`, seconds since the epoch); each is `(hash, subject, time)`.
-pub fn commits_since(commits: &[(String, String, i64)], since: i64) -> Vec<(String, String)> {
-    commits
+/// (`since`, seconds since the epoch).
+pub fn commits_since(commits: &[GitCommit], since: i64) -> Vec<GitCommit> {
+    commits.iter().filter(|c| c.at >= since).cloned().collect()
+}
+
+/// A plan's tasks marked by `commits` (newest first): by their planned messages (chore 15),
+/// the files they name (chore 20), then "Task N" (and the next one in progress).
+pub fn mark_done(tasks: &mut [PlanTask], md: &str, commits: &[GitCommit]) {
+    let subjects: Vec<(String, String)> = commits
         .iter()
-        .filter(|(_, _, at)| *at >= since)
-        .map(|(hash, subject, _)| (hash.clone(), subject.clone()))
+        .map(|c| (c.hash.clone(), c.subject.clone()))
+        .collect();
+    let touched: Vec<(String, Vec<String>)> = commits
+        .iter()
+        .map(|c| (c.hash.clone(), c.files.clone()))
+        .collect();
+    match_planned(tasks, &subjects, &planned_subjects(md));
+    match_files(tasks, &touched, &task_files(md));
+    match_commits(tasks, &subjects);
+}
+
+/// `git log --name-only --format=%x1e%h%x09%ct%x09%s`'s output as commits (a record each,
+/// its changed paths on the lines after its header).
+pub fn parse_log(out: &str) -> Vec<GitCommit> {
+    out.split('\u{1e}')
+        .filter_map(|record| {
+            let mut lines = record.lines();
+            let mut parts = lines.next()?.splitn(3, '\t');
+            let hash = parts.next()?.to_string();
+            let at = parts.next()?.parse::<i64>().ok()?;
+            let subject = parts.next()?.to_string();
+            let files = lines
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
+            Some(GitCommit {
+                hash,
+                subject,
+                at,
+                files,
+            })
+        })
         .collect()
 }
 
@@ -469,6 +597,194 @@ mod tests {
         assert_eq!(tasks[1].state, TaskState::Building);
     }
 
+    /// Chore 16's plan (docs/superpowers/plans/2026-11-25-background-shells.md), its task
+    /// sections' lines that name files, verbatim.
+    const CHORE_16_PLAN: &str = "\
+### Task 1: Events, Claude's reading and the stop
+**Files:**
+- Modify: `src/providers/mod.rs` (Event, Action), `src/providers/claude.rs` (system/user/assistant/encode + tests), `src/providers/agy.rs` (encode arm)
+- Create: `src/providers/fixtures/claude-background-shells.jsonl` (recorded: `scripts/record-agent-fixture.py claude background-shells`; scenario added)
+- [ ] Tests (`claude.rs`): `background_shells_fixture` (2 starts with descriptions, commands and `.output` paths; one `Done`, one `Stopped`); `stop_shell_writes_stop_task`. Run `cargo test --bin fuxx shell` → FAIL, implement, → PASS.
+### Task 2: The shells' state
+**Files:** Create `src/agent_shells.rs` (pure); modify `src/agent_conversation.rs` (field, apply, `you_to`, `process_gone`/`process_ended`), `src/main.rs` (mod).
+- [ ] Tests (`agent_shells.rs`): counts/tone through start → end Done; header \"1 of 3 done · 2 running\"; `last_line` skips trailing blank lines and `\\r` progress; `gone` stops running ones.
+### Task 3: The tab and its popover
+**Files:** Create `src/agent_shells_view.rs` (impl AgentTab: `shells_tab`, `shells_popover`, `toggle_shells`, `stop_shell`, `open_shell_output`, `poll_shell_lines`); modify `src/agent_box.rs` (corner group: `folder_tab` takes the corner pills + popover; shared `corner_pill`; `BoxMenu::Shells`), `src/agent_box_menus.rs` (plan popover hung from the group; Shells closes on press-out), `src/agent_tab.rs` (fields: `shell_poll: Option<Task<()>>`), `src/main.rs`.
+- [ ] Gates; GUI checked in Task 5's scenes.
+### Task 4: The chat row, the ticking and the banner
+**Files:** `src/agent_rows.rs` (a Bash row whose call has a running shell: the arc and \"running in the background · M:SS\"), `src/agent_tab.rs` (`keep_ticking` counts running shells and splices their rows; on `ShellEnded`, emit `AgentTabEvent::ShellEnded { title, failed }`), `src/workspace_agent.rs` (not looking: the 🔔 entry and the banner, through a shared tail of `notify_agent`).
+- [ ] Tests: `row_words` above; the workspace's looking rule is the existing `focused_tab && window_active`.
+### Task 5: Scenes, docs, commits
+**Files:** Create `src/ui_shots/agent_shells.rs` (scenes `agent-shells-with-plan`, `agent-shells-alone`, `agent-shells-done`, `agent-shells-failed`, `agent-shells-popover`); register in `registry.rs` (AREAS, ORDER) and `mod.rs`; note 93 chore 16 + Progress Log.
+- [ ] Assertions: the tab's words (`1/3`, `3/3 ✓`, `1/2 ✕`), a row click → `OpenFile`, ■ → a `stop_task` written.
+- [ ] `scripts/ui-shots.sh --changed master`; look at the new PNGs; commit by name; `scripts/prune-target.sh`.
+";
+
+    /// Chore 16's commits on master (newest first): subject and the files each touched.
+    fn chore_16_commits() -> Vec<(String, String, Vec<String>)> {
+        let c = |hash: &str, subject: &str, files: &[&str]| {
+            (
+                hash.to_string(),
+                subject.to_string(),
+                files.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
+            )
+        };
+        vec![
+            c(
+                "a9eb5f2",
+                "docs: chore 16 (background shells) in note 93 and the Progress Log; its design and plan",
+                &[
+                    "docs/04-Development/93 - Milestone 11ar - Subagents.md",
+                    "docs/06-Progress-Log/60 - Progress Log.md",
+                    "docs/superpowers/plans/2026-11-25-background-shells.md",
+                    "docs/superpowers/specs/2026-11-25-background-shells-design.md",
+                ],
+            ),
+            c(
+                "25ae2a3",
+                "Chore 16 review fixes: a crash or restart stops the Bash row's 'running in the background'; the shells popover closes when your message takes its tab",
+                &[
+                    "src/agent_conversation.rs",
+                    "src/agent_shells.rs",
+                    "src/agent_shells_view.rs",
+                    "src/agent_tab.rs",
+                    "src/ui_shots/agent_shells.rs",
+                    "src/ui_shots/registry.rs",
+                ],
+            ),
+            c(
+                "c5e6861",
+                "Chore 16: scenes for the shells tab (with the plan, alone, done, failed) and its popover; a background check has no outcome until it ends; the corner tabs keep the plan tab's old layout",
+                &[
+                    "src/agent_box.rs",
+                    "src/agent_box_menus.rs",
+                    "src/agent_conversation.rs",
+                    "src/agent_shells_view.rs",
+                    "src/agent_tab.rs",
+                    "src/providers/claude.rs",
+                    "src/providers/claude/shells.rs",
+                    "src/ui_shots/agent_activity.rs",
+                    "src/ui_shots/agent_shells.rs",
+                    "src/ui_shots/mod.rs",
+                    "src/ui_shots/registry.rs",
+                ],
+            ),
+            c(
+                "9bf9010",
+                "Chore 16: the shells tab beside the plan tab, its popover (time, command, last line, stop, open the output), the chat's 'running in the background' row, and a banner when one ends",
+                &[
+                    "src/agent_box.rs",
+                    "src/agent_box_menus.rs",
+                    "src/agent_rows.rs",
+                    "src/agent_shells_view.rs",
+                    "src/agent_tab.rs",
+                    "src/workspace_agent.rs",
+                ],
+            ),
+            c(
+                "7a2753f",
+                "Chore 16: the background shells' state — counts, tone, rows that drop off, the last line, kept in the conversation",
+                &[
+                    "src/agent_conversation.rs",
+                    "src/agent_shells.rs",
+                    "src/main.rs",
+                ],
+            ),
+            c(
+                "37a70c3",
+                "Chore 16: Claude's background shells as events — ShellStarted/ShellEnded from backgrounded local_bash tasks, StopShell as stop_task (recorded fixture)",
+                &[
+                    "scripts/record-agent-fixture.py",
+                    "src/agent_conversation.rs",
+                    "src/providers/agy.rs",
+                    "src/providers/claude.rs",
+                    "src/providers/claude/shells.rs",
+                    "src/providers/fixtures/claude-background-shells.jsonl",
+                    "src/providers/mod.rs",
+                ],
+            ),
+        ]
+    }
+
+    /// Chore 20 (the plan tab said "Plan · 0 of 5" for chore 16's built plan): its commits say
+    /// "Chore 16: …", not "Task N", and the plan names no commit messages; what each task
+    /// shares with its commits is the files it names.
+    #[test]
+    fn chore_16s_plan_is_ticked_by_its_files() {
+        let all = chore_16_commits();
+        let subjects: Vec<(String, String)> =
+            all.iter().map(|(h, s, _)| (h.clone(), s.clone())).collect();
+        let touched: Vec<(String, Vec<String>)> =
+            all.iter().map(|(h, _, f)| (h.clone(), f.clone())).collect();
+        // The bug, as it was: nothing marks a task.
+        let mut before = from_checklist(CHORE_16_PLAN);
+        match_planned(&mut before, &subjects, &planned_subjects(CHORE_16_PLAN));
+        match_commits(&mut before, &subjects);
+        assert_eq!(counts(&before), (0, 5));
+        // With the files: all five, each with the commit that touched the most of its files.
+        let mut tasks = from_checklist(CHORE_16_PLAN);
+        match_planned(&mut tasks, &subjects, &planned_subjects(CHORE_16_PLAN));
+        match_files(&mut tasks, &touched, &task_files(CHORE_16_PLAN));
+        match_commits(&mut tasks, &subjects);
+        assert_eq!(counts(&tasks), (5, 5), "{tasks:?}");
+        let commit = |t: &PlanTask| match &t.state {
+            TaskState::Done { commit } => commit.clone(),
+            _ => None,
+        };
+        assert_eq!(commit(&tasks[0]).as_deref(), Some("37a70c3"));
+        assert_eq!(commit(&tasks[1]).as_deref(), Some("7a2753f"));
+        // 9bf9010 and the later c5e6861 touch as many of its files: the first one built it.
+        assert_eq!(commit(&tasks[2]).as_deref(), Some("9bf9010"));
+        assert_eq!(commit(&tasks[3]).as_deref(), Some("9bf9010"));
+        assert_eq!(commit(&tasks[4]).as_deref(), Some("c5e6861"));
+    }
+
+    /// A task's files: backticked paths in its section, each once (`:line` cut off); not
+    /// commands, globs of words or names without an extension.
+    #[test]
+    fn a_task_names_its_files() {
+        let files = task_files(CHORE_16_PLAN);
+        assert_eq!(files.len(), 5);
+        assert_eq!(
+            files[1],
+            [
+                "src/agent_shells.rs",
+                "src/agent_conversation.rs",
+                "src/main.rs",
+                "agent_shells.rs"
+            ]
+        );
+        assert_eq!(
+            files[4],
+            [
+                "src/ui_shots/agent_shells.rs",
+                "registry.rs",
+                "mod.rs",
+                "scripts/prune-target.sh"
+            ]
+        );
+        assert_eq!(
+            task_files(
+                "### Task 1: A\n- Modify: `src/retry.rs:12-40`, `Icon::Bot`, `c.todo_active`, `.output`\n"
+            ),
+            [vec!["src/retry.rs".to_string()]]
+        );
+    }
+
+    /// The review focus: a plan nobody has built ticks nothing by its files, nor does a commit
+    /// that touched one of a task's three files.
+    #[test]
+    fn untouched_files_tick_nothing() {
+        let md = "### Task 1: A\n- Modify: `src/retry.rs`, `src/agent_tab.rs`, `src/main.rs`\n\
+                  ### Task 2: B\n- Create: `src/backoff.rs`\n";
+        let mut tasks = from_checklist(md);
+        match_files(&mut tasks, &[], &task_files(md));
+        assert_eq!(counts(&tasks), (0, 2));
+        let one = [("abc1234".to_string(), vec!["src/agent_tab.rs".to_string()])];
+        match_files(&mut tasks, &one, &task_files(md));
+        assert_eq!(counts(&tasks), (0, 2), "1 of 3 files is not the task");
+    }
+
     #[test]
     fn the_first_unfinished_is_building() {
         let mut tasks = from_checklist("- [x] a\n- [ ] b\n- [ ] c\n");
@@ -498,16 +814,63 @@ mod tests {
         assert!(!has_task_headings("# Readme\n- [ ] item\n- [x] other\n"));
     }
 
+    fn git(hash: &str, subject: &str, at: i64, files: &[&str]) -> GitCommit {
+        GitCommit {
+            hash: hash.into(),
+            subject: subject.into(),
+            at,
+            files: files.iter().map(|f| f.to_string()).collect(),
+        }
+    }
+
     #[test]
     fn old_commits_mark_nothing() {
         let commits = [
-            ("new1".to_string(), "Task 1: A".to_string(), 200),
-            ("old9".to_string(), "M11au Task 2: x".to_string(), 50),
+            git("new1", "Task 1: A", 200, &[]),
+            git("old9", "M11au Task 2: x", 50, &[]),
         ];
+        assert_eq!(commits_since(&commits, 100), [commits[0].clone()]);
+    }
+
+    /// The log the tab reads: a record per commit, its paths under its header.
+    #[test]
+    fn a_log_with_names_parses() {
+        let out = "\u{1e}9bf9010\t1795662889\tChore 16: the shells tab\n\nsrc/agent_box.rs\nsrc/agent_rows.rs\n\
+                   \u{1e}7a2753f\t1795662544\tChore 16: the state\n\nsrc/main.rs\n";
         assert_eq!(
-            commits_since(&commits, 100),
-            [("new1".to_string(), "Task 1: A".to_string())]
+            parse_log(out),
+            [
+                git(
+                    "9bf9010",
+                    "Chore 16: the shells tab",
+                    1795662889,
+                    &["src/agent_box.rs", "src/agent_rows.rs"]
+                ),
+                git(
+                    "7a2753f",
+                    "Chore 16: the state",
+                    1795662544,
+                    &["src/main.rs"]
+                ),
+            ]
         );
+    }
+
+    /// Chore 20 end to end: the real log's records through `mark_done` tick all five.
+    #[test]
+    fn mark_done_reads_files_too() {
+        let commits: Vec<GitCommit> = chore_16_commits()
+            .into_iter()
+            .map(|(hash, subject, files)| GitCommit {
+                hash,
+                subject,
+                at: 0,
+                files,
+            })
+            .collect();
+        let mut tasks = from_checklist(CHORE_16_PLAN);
+        mark_done(&mut tasks, CHORE_16_PLAN, &commits);
+        assert_eq!(counts(&tasks), (5, 5));
     }
 
     #[test]

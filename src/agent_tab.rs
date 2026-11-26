@@ -6167,7 +6167,7 @@ impl AgentTab {
         cx.spawn(async move |this, cx| {
             let read = read.await;
             this.update(cx, |this, cx| {
-                use crate::plan_progress::{from_checklist, from_todos, match_commits};
+                use crate::plan_progress::{from_checklist, from_todos};
                 if generation != this.plan_gen {
                     return;
                 }
@@ -6177,13 +6177,7 @@ impl AgentTab {
                         // The plan shown from now on, until a turn's own file is one.
                         this.plan_file = Some(file);
                         let mut tasks = from_checklist(&md);
-                        // Commits saying the task's planned message count too (chore 15).
-                        crate::plan_progress::match_planned(
-                            &mut tasks,
-                            &commits,
-                            &crate::plan_progress::planned_subjects(&md),
-                        );
-                        match_commits(&mut tasks, &commits);
+                        crate::plan_progress::mark_done(&mut tasks, &md, &commits);
                         tasks
                     }
                     (None, None) => Vec::new(),
@@ -6896,26 +6890,24 @@ fn plan_since(cwd: &Path, file: &Path) -> i64 {
     added.into_iter().chain(created).min().unwrap_or(i64::MAX)
 }
 
-/// The branch's latest commits (short hash, time and subject), for marking a plan's tasks done;
-/// none outside a repo. Run off the UI thread.
-fn recent_commits(cwd: &Path) -> Vec<(String, String, i64)> {
+/// The branch's latest commits (short hash, time, subject and the paths each changed), for
+/// marking a plan's tasks done; none outside a repo. Run off the UI thread.
+fn recent_commits(cwd: &Path) -> Vec<crate::plan_progress::GitCommit> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
-        .args(["log", "-n", "50", "--format=%h%x09%ct%x09%s"])
+        .args([
+            "log",
+            "-n",
+            "50",
+            "--name-only",
+            "--format=%x1e%h%x09%ct%x09%s",
+        ])
         .output();
     let Ok(out) = out else {
         return Vec::new();
     };
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| {
-            let mut parts = l.splitn(3, '\t');
-            let hash = parts.next()?;
-            let at = parts.next()?.parse::<i64>().ok()?;
-            Some((hash.to_string(), parts.next()?.to_string(), at))
-        })
-        .collect()
+    crate::plan_progress::parse_log(&String::from_utf8_lossy(&out.stdout))
 }
 
 #[cfg(test)]
