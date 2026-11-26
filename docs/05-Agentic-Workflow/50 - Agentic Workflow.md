@@ -71,7 +71,10 @@ the next milestone"). Applies from the milestone after M11q.
    and the hand-off in the last).
 2. **Built in the session, not by subagents.** After the plan is approved, the assistant in the session
    builds every task itself with `superpowers:executing-plans`: test first (`superpowers:test-driven-development`),
-   the per-task gate above, a commit per task. No implementer or per-task reviewer subagents.
+   the per-task gate above, a commit per task. No implementer or per-task reviewer subagents. As each
+   task finishes, its `- [ ]` boxes in the plan file are ticked (`- [x]`), with the task's commit or the
+   next one (chore 32, 2026-11-26: the plan tab reads the boxes first; a plan left unticked shows a
+   built task as still going).
 3. **One review at the end.** When every task is in, the full screenshot run, then one fresh reviewer on
    the most capable model available reads the whole branch against the design and the plan; one fix wave;
    a short re-check of the fixes; the full screenshot run again. Then the milestone note, the Roadmap and

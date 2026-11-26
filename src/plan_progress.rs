@@ -191,19 +191,36 @@ fn file_token(token: &str) -> Option<&str> {
     ok.then_some(path)
 }
 
-/// Each `### Task N` section's files (chore 20): the backticked paths it names (`**Files:**`,
-/// its steps), each once, in order; a bare name (`claude.rs`) a path of the same section ends
-/// in is that file, so it goes.
+/// Each `### Task N` section's files (chore 20): the backticked paths its `**Files:**` block
+/// names (that line and the lines under it, up to a blank line, a step's box or another bold
+/// label), each once, in order; a bare name (`claude.rs`) a path of the same section ends in is
+/// that file, so it goes. A path only in a step (`scripts/prune-target.sh`, run, never edited)
+/// isn't one the task changes (chore 32).
 pub fn task_files(md: &str) -> Vec<Vec<String>> {
     let mut out: Vec<Vec<String>> = Vec::new();
+    let mut in_files = false;
     for line in md.lines() {
         if task_heading(line).is_some() {
             out.push(Vec::new());
+            in_files = false;
             continue;
         }
         let Some(files) = out.last_mut() else {
             continue;
         };
+        let text = line.trim_start();
+        if text.starts_with("**Files") {
+            in_files = true;
+        } else if text.is_empty()
+            || text.starts_with('#')
+            || text.starts_with("**")
+            || checkbox(line).is_some()
+        {
+            in_files = false;
+        }
+        if !in_files {
+            continue;
+        }
         // The odd pieces between backticks are the backticked ones.
         for token in line.split('`').skip(1).step_by(2) {
             if let Some(path) = file_token(token)
@@ -232,6 +249,8 @@ fn names_file(path: &str, named: &str) -> bool {
 /// A commit counts for a task only when it is newer than the newest commit an earlier task was
 /// done by, or touches a file this task names and no earlier one does (the review: an earlier
 /// task's commit touching a later task's files ticked it before it was built).
+/// A task naming no files (a closing "docs, screenshots, review") is done, once the task before
+/// it is, by the first commit after the newest an earlier task was done by (chore 32).
 pub fn match_files(
     tasks: &mut [PlanTask],
     commits: &[(String, Vec<String>)],
@@ -243,7 +262,15 @@ pub fn match_files(
     // The newest commit an earlier task was done by, as its place (newest first: smaller).
     let mut floor: Option<usize> = None;
     for (k, named) in files.iter().enumerate().take(tasks.len()) {
-        if !matches!(tasks[k].state, TaskState::Done { .. }) && !named.is_empty() {
+        let open = !matches!(tasks[k].state, TaskState::Done { .. });
+        if open && named.is_empty() {
+            let after_previous = k > 0 && matches!(tasks[k - 1].state, TaskState::Done { .. });
+            if after_previous && let Some(f) = floor.filter(|f| *f > 0) {
+                tasks[k].state = TaskState::Done {
+                    commit: Some(commits[f - 1].0.clone()),
+                };
+            }
+        } else if open {
             let earlier: Vec<&String> = files[..k].iter().flatten().collect();
             let own: Vec<&String> = named
                 .iter()
@@ -297,10 +324,8 @@ fn names_task(subject: &str, n: usize) -> bool {
     })
 }
 
-/// Marks done the tasks a commit names (`Task 3:` in its subject), with that commit; then, if
-/// nothing is being built and some task is done already, the first task not done is (the
-/// 2026-11-25 chores: a plan nobody has started shows no ◐).
-pub fn match_commits(tasks: &mut [PlanTask], commits: &[(String, String)]) {
+/// Marks done the tasks a commit names (`Task 3:` in its subject), with that commit.
+fn match_named(tasks: &mut [PlanTask], commits: &[(String, String)]) {
     for (i, task) in tasks.iter_mut().enumerate() {
         let named = commits
             .iter()
@@ -310,6 +335,11 @@ pub fn match_commits(tasks: &mut [PlanTask], commits: &[(String, String)]) {
             task.state = TaskState::Done { commit: Some(hash) };
         }
     }
+}
+
+/// If nothing is being built and some task is done already, the first task not done is (the
+/// 2026-11-25 chores: a plan nobody has started shows no ◐).
+fn mark_building(tasks: &mut [PlanTask]) {
     let started = tasks
         .iter()
         .any(|t| matches!(t.state, TaskState::Done { .. }));
@@ -354,7 +384,8 @@ pub fn commits_since(commits: &[GitCommit], since: i64) -> Vec<GitCommit> {
 }
 
 /// A plan's tasks marked by `commits` (newest first): by their planned messages (chore 15),
-/// the files they name (chore 20), then "Task N" (and the next one in progress).
+/// "Task N", then the files they name (chore 20; after the others, so a task naming no files
+/// can follow a task "Task N" marked), and the next one in progress.
 pub fn mark_done(tasks: &mut [PlanTask], md: &str, commits: &[GitCommit]) {
     let subjects: Vec<(String, String)> = commits
         .iter()
@@ -365,8 +396,9 @@ pub fn mark_done(tasks: &mut [PlanTask], md: &str, commits: &[GitCommit]) {
         .map(|c| (c.hash.clone(), c.files.clone()))
         .collect();
     match_planned(tasks, &subjects, &planned_subjects(md));
+    match_named(tasks, &subjects);
     match_files(tasks, &touched, &task_files(md));
-    match_commits(tasks, &subjects);
+    mark_building(tasks);
 }
 
 /// `git log --name-only --format=%x1e%h%x09%ct%x09%s`'s output as commits (a record each,
@@ -423,6 +455,9 @@ pub fn shows(tasks: &[PlanTask]) -> bool {
 }
 
 #[cfg(test)]
+mod real_plans;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -436,6 +471,13 @@ mod tests {
 
     fn done(t: &PlanTask) -> bool {
         matches!(t.state, TaskState::Done { .. })
+    }
+
+    /// The tasks commits name ("Task 3:"), then the next one in progress, as `mark_done` reads
+    /// subjects.
+    fn match_commits(tasks: &mut [PlanTask], commits: &[(String, String)]) {
+        match_named(tasks, commits);
+        mark_building(tasks);
     }
 
     #[test]
@@ -785,16 +827,12 @@ mod tests {
         );
         assert_eq!(
             files[4],
-            [
-                "src/ui_shots/agent_shells.rs",
-                "registry.rs",
-                "mod.rs",
-                "scripts/prune-target.sh"
-            ]
+            ["src/ui_shots/agent_shells.rs", "registry.rs", "mod.rs"],
+            "a script the task only runs (`scripts/prune-target.sh`, in a step) isn't one it changes"
         );
         assert_eq!(
             task_files(
-                "### Task 1: A\n- Modify: `src/retry.rs:12-40`, `Icon::Bot`, `c.todo_active`, `.output`\n"
+                "### Task 1: A\n**Files:**\n- Modify: `src/retry.rs:12-40`, `Icon::Bot`, `c.todo_active`, `.output`\n"
             ),
             [vec!["src/retry.rs".to_string()]]
         );
@@ -821,10 +859,11 @@ mod tests {
 
     /// The review of chores 17–22 (finding 1): replaying that plan's own commits one by one,
     /// each commit ticks its own task only — a later task whose files an earlier task's commit
-    /// touched waits for a commit of its own.
+    /// touched waits for a commit of its own. Task 7 names no files it changes (chore 32): the
+    /// first commit after Task 6's ticks it, 7 of 7.
     #[test]
     fn a_plan_replayed_commit_by_commit_ticks_one_task_at_a_time() {
-        let all: [(&str, &[&str]); 6] = [
+        let all: [(&str, &[&str]); 7] = [
             (
                 "e178869",
                 &[
@@ -887,6 +926,10 @@ mod tests {
                     "src/ui_shots/agent_activity.rs",
                 ],
             ),
+            (
+                "cd13597",
+                &["docs/04-Development/93 - Milestone 11ar - Subagents.md"],
+            ),
         ];
         for landed in 1..=all.len() {
             // Newest first, as git gives them.
@@ -911,8 +954,8 @@ mod tests {
     /// that touched one of a task's three files.
     #[test]
     fn untouched_files_tick_nothing() {
-        let md = "### Task 1: A\n- Modify: `src/retry.rs`, `src/agent_tab.rs`, `src/main.rs`\n\
-                  ### Task 2: B\n- Create: `src/backoff.rs`\n";
+        let md = "### Task 1: A\n**Files:** Modify `src/retry.rs`, `src/agent_tab.rs`, `src/main.rs`\n\
+                  ### Task 2: B\n**Files:** Create `src/backoff.rs`\n";
         let mut tasks = from_checklist(md);
         match_files(&mut tasks, &[], &task_files(md));
         assert_eq!(counts(&tasks), (0, 2));
