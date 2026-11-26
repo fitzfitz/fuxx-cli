@@ -21,6 +21,7 @@ mod agent_long_chat;
 mod agent_markdown;
 mod agent_phases;
 mod agent_process;
+mod agent_shells;
 mod agent_status_line;
 mod agent_step_words;
 mod agent_steps;

@@ -215,6 +215,8 @@ pub struct Conversation {
     /// each view has and which tool rows stand alone follow them, so the tab's caches start
     /// again; the pill labels too.
     shape: u64,
+    /// The background shells (chore 16): the shells tab and its popover.
+    shells: crate::agent_shells::Shells,
 }
 
 /// What `Conversation::cut_before` cut (batch 3, chore 2): kept for Undo Rewind until the next
@@ -435,7 +437,35 @@ impl Conversation {
                     self.reply(&id, reply);
                 }
             }
-            Event::ShellStarted { .. } | Event::ShellEnded { .. } => {}
+            Event::ShellStarted {
+                id,
+                call,
+                description,
+                command,
+                output,
+            } => {
+                self.touch_call(&call);
+                self.shells.start(crate::agent_shells::Shell {
+                    id,
+                    call,
+                    description,
+                    command,
+                    output,
+                    started: std::time::Instant::now(),
+                    ended: None,
+                    last_line: None,
+                });
+            }
+            Event::ShellEnded { id, end, output } => {
+                let now = std::time::Instant::now();
+                if let Some(call) = self
+                    .shells
+                    .end(&id, end, output, now)
+                    .map(|s| s.call.clone())
+                {
+                    self.touch_call(&call);
+                }
+            }
             Event::Todo(list) => match self.items.iter().position(|i| matches!(i, Item::Todo(_))) {
                 Some(ix) => {
                     *self.items.get_mut(ix) = Item::Todo(list);
@@ -693,6 +723,7 @@ impl Conversation {
         to: Option<Relay>,
     ) {
         self.passed_over();
+        self.shells.you_sent();
         self.latest_you = Some(self.items.len());
         self.items.push(Item::You {
             text,
@@ -1239,6 +1270,7 @@ impl Conversation {
     /// The process was ended from here (Force stop, a restart for a change): its subagents
     /// stop, and nothing of theirs runs or waits on (no `process_ended` follows).
     pub fn process_gone(&mut self) {
+        self.shells.gone(std::time::Instant::now());
         self.stop_lanes(LaneStatus::Stopped);
         self.settle();
     }
@@ -1257,6 +1289,7 @@ impl Conversation {
         self.ended = true;
         self.outstanding = 0;
         self.busy = false;
+        self.shells.gone(std::time::Instant::now());
         self.stop_lanes(LaneStatus::Ended);
         self.settle();
         let tail = stderr_tail.trim();
@@ -1340,6 +1373,23 @@ impl Conversation {
     /// Your latest message's index in `items`, if you said anything.
     pub fn latest_you(&self) -> Option<usize> {
         self.latest_you
+    }
+
+    /// The background shells (chore 16).
+    pub fn shells(&self) -> &crate::agent_shells::Shells {
+        &self.shells
+    }
+
+    /// The background shells, to note what their files say or that the popover was opened.
+    pub fn shells_mut(&mut self) -> &mut crate::agent_shells::Shells {
+        &mut self.shells
+    }
+
+    /// Tool call `call`'s row is drawn again (its shell started or ended).
+    fn touch_call(&mut self, call: &str) {
+        if let Some(ix) = self.items.tool_index(call) {
+            let _ = self.items.get_mut(ix);
+        }
     }
 
     /// The agent's todo list, if it keeps one (the plan tab).
@@ -1494,6 +1544,48 @@ mod tests {
             text: text.into(),
             state: TodoState::Active,
         }])
+    }
+
+    /// Chore 16: a background shell is kept from its start to your next message after its
+    /// end, and each change redraws the Bash row that started it.
+    #[test]
+    fn background_shells_are_kept_and_touch_their_row() {
+        use crate::providers::ShellEnd;
+        let mut c = Conversation::new();
+        c.you("go".into(), Vec::new());
+        c.apply(tool_started("t1"));
+        let row = c.tool_index("t1").unwrap();
+        let before = c.version(row);
+        c.apply(Event::ShellStarted {
+            id: "b1".into(),
+            call: "t1".into(),
+            description: "Run the tests".into(),
+            command: "cargo test".into(),
+            output: None,
+        });
+        assert_eq!(c.shells().counts(), (0, 1));
+        assert!(c.shells().running_for_call("t1").is_some());
+        assert!(c.version(row) > before, "its row says it runs");
+        let started = c.version(row);
+        c.apply(Event::ShellEnded {
+            id: "b1".into(),
+            end: ShellEnd::Done,
+            output: None,
+        });
+        assert_eq!(c.shells().counts(), (1, 1));
+        assert!(c.version(row) > started, "and that it ended");
+        c.you("next".into(), Vec::new());
+        assert!(c.shells().is_empty(), "gone with your next message");
+        // The process gone: a running one is stopped.
+        c.apply(Event::ShellStarted {
+            id: "b2".into(),
+            call: "t1".into(),
+            description: "Serve".into(),
+            command: "npm run dev".into(),
+            output: None,
+        });
+        c.process_gone();
+        assert_eq!(c.shells().counts(), (1, 1));
     }
 
     fn tool_started(id: &str) -> Event {
