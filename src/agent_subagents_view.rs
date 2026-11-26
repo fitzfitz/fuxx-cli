@@ -23,8 +23,8 @@ const ROW_H: f32 = 26.0;
 const MAX_ROWS: usize = 10;
 
 impl AgentTab {
-    /// The subagents tab's pill (`🤖 1/2`): peach while one runs, green once all finished, red
-    /// while one needs you; none before a subagent started.
+    /// The subagents tab's pill (`🤖 1/2`): peach while one runs, its green icon alone once all
+    /// finished (chore 34), red while one needs you; none before a subagent started.
     pub(crate) fn subagents_tab(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
         let lanes = self.conversation.lanes();
         if lanes.is_empty() {
@@ -35,6 +35,11 @@ impl AgentTab {
             TabTone::Done => c.tool_ok,
             TabTone::NeedsYou => c.failed_panel,
         };
+        // All finished: the count moves into the tip (chore 34).
+        let tip = match tab_tone(lanes) {
+            TabTone::Done => crate::corner_tabs::done_tip(lanes.len(), "subagent", "subagents"),
+            _ => "Subagents".to_string(),
+        };
         Some(
             self.corner_pill(
                 "agent-subagents-tab",
@@ -43,7 +48,7 @@ impl AgentTab {
                 tab_words(lanes),
                 ink,
                 BoxMenu::Subagents,
-                "Subagents",
+                tip,
                 |this, _, cx| this.toggle_subagents(cx),
                 c,
                 cx,

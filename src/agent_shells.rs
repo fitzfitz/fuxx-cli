@@ -196,7 +196,8 @@ pub fn tab_words(shells: &Shells) -> String {
     let (done, all) = shells.counts();
     match shells.tone() {
         Tone::Failed => format!("{done}/{all} \u{2715}"),
-        Tone::Done => format!("{done}/{all} \u{2713}"),
+        // Chore 34: none once all are done (the tab is its green icon).
+        Tone::Done => String::new(),
         Tone::Running => format!("{done}/{all}"),
     }
 }
@@ -303,7 +304,8 @@ mod tests {
         s.end("b", ShellEnd::Stopped, None, t0);
         s.end("c", ShellEnd::Done, None, t0);
         assert_eq!((s.counts(), s.tone()), ((3, 3), Tone::Done));
-        assert_eq!(tab_words(&s), "3/3 \u{2713}");
+        // Chore 34: all done, no words (the tab shrinks to its green icon).
+        assert_eq!(tab_words(&s), "");
         assert_eq!(s.header(), "3 of 3 done");
         // An end told twice (or of no shell) is no news.
         assert!(s.end("a", ShellEnd::Done, None, t0).is_none());

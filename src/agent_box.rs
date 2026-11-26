@@ -1856,13 +1856,14 @@ impl AgentTab {
         words: String,
         ink: alacritty_terminal::vte::ansi::Rgb,
         menu: BoxMenu,
-        tip: &'static str,
+        tip: impl Into<SharedString>,
         toggle: fn(&mut Self, &mut Window, &mut Context<Self>),
         c: &Colors,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let hover = c.pill_hover;
         let open = self.menu.as_ref() == Some(&menu);
+        let tip: SharedString = tip.into();
         self.marked(
             part,
             div()
@@ -1880,8 +1881,9 @@ impl AgentTab {
                 .hover(move |s| s.bg(hsla(hover)))
                 .when(open, |d| d.bg(hsla(hover)))
                 .child(crate::icons::icon(icon, px(13.), hsla(ink)))
-                .child(SharedString::from(words))
-                .tooltip(move |_, cx| cx.new(|_| crate::sidebar_toggle::Tip(tip.into())).into())
+                // A finished tab has no words (chore 34): its icon alone.
+                .when(!words.is_empty(), |d| d.child(SharedString::from(words)))
+                .tooltip(move |_, cx| cx.new(|_| crate::sidebar_toggle::Tip(tip.clone())).into())
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     let pressed = match event {
                         ClickEvent::Mouse(click) => Some(click.down.position),
@@ -1914,17 +1916,20 @@ impl AgentTab {
             .child(plan)
     }
 
-    /// The burger tab's pill (`☰ 4/6`); none without a task list (`plan_progress::shows`).
+    /// The burger tab's pill (`☰ 4/6`, its green icon alone once all are done); none without a
+    /// task list (`plan_progress::shows`).
     fn plan_tab(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
         use crate::plan_progress::{counts, shows};
         if !shows(&self.plan) {
             return None;
         }
+        // All done: its icon alone, green, the count in its tip (chore 34).
         let (done, all) = counts(&self.plan);
-        let words = if done == all {
-            format!("{done}/{all} \u{2713}")
+        let (words, ink, tip) = if done == all {
+            let tip = crate::corner_tabs::done_tip(all, "task", "tasks");
+            (String::new(), c.tool_ok, tip)
         } else {
-            format!("{done}/{all}")
+            (format!("{done}/{all}"), c.dim, "Plan progress".to_string())
         };
         Some(
             self.corner_pill(
@@ -1932,9 +1937,9 @@ impl AgentTab {
                 "plan-tab",
                 crate::icons::Icon::Menu,
                 words,
-                c.dim,
+                ink,
                 BoxMenu::Plan,
-                "Plan progress  \u{2325}\u{2318}P",
+                format!("{tip}  \u{2325}\u{2318}P"),
                 |this, window, cx| this.toggle_plan(&crate::agent_tab::TogglePlan, window, cx),
                 c,
                 cx,

@@ -37,11 +37,42 @@ const fn scene(name: &'static str, run: fn()) -> Scene {
     }
 }
 
+/// Chore 34's corner tabs together: the subagents', the shells' and the plan's.
+const CORNER: &[&str] = &[
+    "src/corner_tabs.rs",
+    "src/agent_subagents.rs",
+    "src/agent_subagents_view.rs",
+    "src/agent_shells.rs",
+    "src/agent_shells_view.rs",
+    "src/agent_box.rs",
+    "src/agent_box_menus.rs",
+    "src/agent_conversation.rs",
+    "src/plan_progress.rs",
+    "src/providers/claude/shells.rs",
+    "src/providers/fixtures/claude-subagents.jsonl",
+    "src/providers/fixtures/claude-subagent-ask.jsonl",
+];
+
+const fn corner(name: &'static str, run: fn()) -> Scene {
+    Scene {
+        name,
+        run,
+        themes: Themes::Both,
+        serial: false,
+        kind: Kind::Visual,
+        sources: CORNER,
+    }
+}
+
 pub(super) const SCENES: &[Scene] = &[
     scene("agent-subagents-tab", agent_subagents_tab),
     scene("agent-subagents-popover", agent_subagents_popover),
     scene("agent-subagents-waiting", agent_subagents_waiting),
     scene("agent-subagents-many", agent_subagents_many),
+    corner("agent-corner-tabs-running", agent_corner_tabs_running),
+    corner("agent-corner-tabs-some-done", agent_corner_tabs_some_done),
+    corner("agent-corner-tabs-all-done", agent_corner_tabs_all_done),
+    corner("agent-corner-tabs-needs-you", agent_corner_tabs_needs_you),
 ];
 
 const SUBAGENTS: &str = include_str!("../providers/fixtures/claude-subagents.jsonl");
@@ -339,4 +370,148 @@ pub(super) fn agent_subagents_many() {
             );
         },
     );
+}
+
+/// Chore 34's four states (the mockup's): what the subagents, shells and plan have done.
+#[derive(Clone, Copy, PartialEq)]
+enum Corner {
+    /// One of two subagents, one of three shells and four of six tasks done.
+    Running,
+    /// The subagents and shells all finished, the plan still going.
+    SomeDone,
+    /// Everything finished, the turn over.
+    AllDone,
+    /// A subagent waits on you; the shells done, the plan going.
+    NeedsYou,
+}
+
+/// How a corner tab looks: its count shown, or its icon alone.
+#[derive(Clone, Copy)]
+enum Look {
+    Counting,
+    Done,
+}
+
+/// One state: you asked; the subagents (the recordings), three shells and the plan as `state`
+/// says; then each tab is checked: a finished one is its icon alone in green, an unfinished one
+/// keeps its count (peach while running, the plan's dim, red while one needs you).
+fn corner_tabs(name: &'static str, state: Corner) {
+    shoot(name, DIMS, move |n, cx, window, tab, _| {
+        use super::agent_shells::{ended, give_shells, plan_done};
+        let ask = state == Corner::NeedsYou;
+        super::agent::feed(cx, tab, |t, cx| {
+            t.send("Read a.txt and b.txt with two subagents".into(), cx)
+        });
+        let all = decode(if ask { SUB_ASK } else { SUBAGENTS });
+        let asked = all
+            .iter()
+            .position(|e| matches!(e, Event::Permission { .. }));
+        let keep = if ask {
+            asked.expect("the subagent asks") + 1
+        } else {
+            all.len()
+        };
+        let second = all
+            .iter()
+            .filter_map(|e| match e {
+                Event::SubagentStarted { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .nth(1);
+        let (mut events, mut turn_done) = (Vec::new(), Vec::new());
+        for e in all.into_iter().take(keep) {
+            match &e {
+                Event::TurnDone { .. } => turn_done.push(e),
+                // Running: the second subagent still works.
+                Event::SubagentEnded { id, .. }
+                    if state == Corner::Running && Some(id) == second.as_ref() => {}
+                _ => events.push(e),
+            }
+        }
+        give(cx, tab, events);
+        let ends: Vec<String> = match state {
+            Corner::Running => vec![ended(0, "completed", 0)],
+            _ => (0..3).map(|i| ended(i, "completed", 0)).collect(),
+        };
+        give_shells(cx, tab, 3, &ends);
+        plan_done(cx, tab, if state == Corner::AllDone { 6 } else { 4 });
+        if state == Corner::AllDone {
+            give(cx, tab, turn_done);
+        }
+        let shot = frame_fresh(cx, window);
+        let c = cx.read(|cx| {
+            crate::agent_tab::Colors::of(&cx.global::<crate::appearance::Appearance>().theme)
+        });
+        let dims = gpui::size(px(DIMS.0), px(DIMS.1));
+        let (counting, done) = (|ink| (Look::Counting, ink), |ink| (Look::Done, ink));
+        let looks = match state {
+            Corner::Running => [
+                counting(c.todo_active),
+                counting(c.todo_active),
+                counting(c.dim),
+            ],
+            Corner::SomeDone => [done(c.tool_ok), done(c.tool_ok), counting(c.dim)],
+            Corner::AllDone => [done(c.tool_ok), done(c.tool_ok), done(c.tool_ok)],
+            Corner::NeedsYou => [counting(c.failed_panel), done(c.tool_ok), counting(c.dim)],
+        };
+        let outer = [c.outer.r, c.outer.g, c.outer.b];
+        for (name, (look, ink)) in ["subagents-tab", "shells-tab", "plan-tab"]
+            .into_iter()
+            .zip(looks)
+        {
+            let b = part(cx, tab, n, name);
+            // A pill: 7 of room each side of the 13 pt icon, then 5 and its words.
+            match look {
+                Look::Done => assert!(
+                    b.size.width <= px(28.),
+                    "{n}: {name} is its icon alone {b:?}"
+                ),
+                Look::Counting => {
+                    assert!(b.size.width >= px(40.), "{n}: {name} keeps its count {b:?}")
+                }
+            }
+            let got = super::ink_in(&shot, dims, b, outer);
+            assert!(
+                super::gap(got, ink) < 40,
+                "{n}: {name} in {ink:?}, not {got:?}"
+            );
+        }
+        if state == Corner::AllDone {
+            // A click on a finished tab still opens its list (and closes it again).
+            for (name, menu) in [
+                ("subagents-tab", crate::agent_box::BoxMenu::Subagents),
+                ("shells-tab", crate::agent_box::BoxMenu::Shells),
+                ("plan-tab", crate::agent_box::BoxMenu::Plan),
+            ] {
+                click(cx, window, part(cx, tab, n, name));
+                assert_eq!(
+                    cx.read(|cx| tab.read(cx).shot_menu()),
+                    Some(menu),
+                    "{n}: {name} opens its list"
+                );
+                click(cx, window, part(cx, tab, n, name));
+                let _ = frame_fresh(cx, window);
+            }
+            assert!(
+                cx.read(|cx| tab.read(cx).shot_menu()).is_none(),
+                "{n}: closed again"
+            );
+        }
+    });
+}
+
+pub(super) fn agent_corner_tabs_running() {
+    corner_tabs("agent-corner-tabs-running", Corner::Running);
+}
+
+pub(super) fn agent_corner_tabs_some_done() {
+    corner_tabs("agent-corner-tabs-some-done", Corner::SomeDone);
+}
+
+pub(super) fn agent_corner_tabs_all_done() {
+    corner_tabs("agent-corner-tabs-all-done", Corner::AllDone);
+}
+
+pub(super) fn agent_corner_tabs_needs_you() {
+    corner_tabs("agent-corner-tabs-needs-you", Corner::NeedsYou);
 }

@@ -36,10 +36,10 @@ pub fn counts(lanes: &[Lane]) -> (usize, usize) {
     (done, lanes.len())
 }
 
-/// The tab's words: `4/6`, or `6/6 ✓` once all finished.
+/// The tab's words: `4/6`; none once all finished (chore 34: the tab is its green icon).
 pub fn tab_words(lanes: &[Lane]) -> String {
     match counts(lanes) {
-        (done, all) if done == all => format!("{done}/{all} \u{2713}"),
+        (done, all) if done == all => String::new(),
         (done, all) => format!("{done}/{all}"),
     }
 }
@@ -174,7 +174,8 @@ mod tests {
     fn the_tab_counts_finished_of_all() {
         assert_eq!(tab_words(&six()), "3/6");
         let done = vec![lane("a", LaneStatus::Done), lane("b", LaneStatus::Ended)];
-        assert_eq!(tab_words(&done), "2/2 \u{2713}");
+        // Chore 34: all finished, no words (the tab shrinks to its green icon).
+        assert_eq!(tab_words(&done), "");
     }
 
     #[test]

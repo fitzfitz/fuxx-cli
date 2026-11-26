@@ -91,7 +91,7 @@ fn started(n: usize) -> String {
 }
 
 /// Claude's notification that shell `n` ended `status` (exit `code`).
-fn ended(n: usize, status: &str, code: i32) -> String {
+pub(super) fn ended(n: usize, status: &str, code: i32) -> String {
     json!({"type":"system","subtype":"task_notification","task_id":format!("bsh{n}"),
         "tool_use_id":format!("toolu_shell{n}"),"status":status,
         "output_file":format!("/tmp/fx/tasks/bsh{n}.output"),
@@ -110,6 +110,16 @@ fn run_shells(
     feed(cx, tab, |t, cx| {
         t.send("Run the checks and serve my-app".into(), cx)
     });
+    give_shells(cx, tab, count, ends);
+}
+
+/// `run_shells` after your message (the corner tabs' scenes send their own).
+pub(super) fn give_shells(
+    cx: &mut VisualTestAppContext,
+    tab: &Entity<AgentTab>,
+    count: usize,
+    ends: &[String],
+) {
     // One translator reads them all (it knows which tasks are shells); the endings are given
     // after the shells are dated back.
     let mut lines: Vec<String> = (0..count).map(started).collect();
@@ -134,6 +144,11 @@ fn run_shells(
 
 /// The plan's six tasks, four done (`☰ 4/6`).
 fn plan(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) {
+    plan_done(cx, tab, 4);
+}
+
+/// The plan's six tasks, the first `done` done and the next one active.
+pub(super) fn plan_done(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>, done: usize) {
     let item = |text: &str, state| TodoItem {
         text: text.into(),
         state,
@@ -141,14 +156,27 @@ fn plan(cx: &mut VisualTestAppContext, tab: &Entity<AgentTab>) {
     give(
         cx,
         tab,
-        vec![Event::Todo(vec![
-            item("Task 1: the retry policy", TodoState::Done),
-            item("Task 2: back off on 429", TodoState::Done),
-            item("Task 3: retry.rs tests", TodoState::Done),
-            item("Task 4: wire it into the client", TodoState::Done),
-            item("Task 5: run the suite", TodoState::Active),
-            item("Task 6: docs", TodoState::Pending),
-        ])],
+        vec![Event::Todo(
+            [
+                "Task 1: the retry policy",
+                "Task 2: back off on 429",
+                "Task 3: retry.rs tests",
+                "Task 4: wire it into the client",
+                "Task 5: run the suite",
+                "Task 6: docs",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let state = match i.cmp(&done) {
+                    std::cmp::Ordering::Less => TodoState::Done,
+                    std::cmp::Ordering::Equal => TodoState::Active,
+                    std::cmp::Ordering::Greater => TodoState::Pending,
+                };
+                item(text, state)
+            })
+            .collect(),
+        )],
     );
 }
 
@@ -214,7 +242,7 @@ pub(super) fn agent_shells_alone() {
     });
 }
 
-/// All three done: green `3/3 ✓`, kept until your next message; each ending told (the
+/// All three done: the tab its green icon alone (chore 34), kept until your next message; each ending told (the
 /// Workspace's banner when you aren't looking: "Run the test suite · done in 6:40").
 pub(super) fn agent_shells_done() {
     shoot("agent-shells-done", DIMS, |n, cx, window, tab, _| {
@@ -231,7 +259,7 @@ pub(super) fn agent_shells_done() {
         let ends: Vec<String> = (0..3).map(|i| ended(i, "completed", 0)).collect();
         run_shells(cx, tab, 3, &ends);
         let _ = frame_fresh(cx, window);
-        assert_eq!(tab_words(cx, tab), "3/3 \u{2713}", "{n}");
+        assert_eq!(tab_words(cx, tab), "", "{n}: no count, no check (chore 34)");
         let heard = heard.borrow();
         assert_eq!(heard.len(), 3, "{n}: each ending told once: {heard:?}");
         assert!(

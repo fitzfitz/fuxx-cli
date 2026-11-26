@@ -28,8 +28,8 @@ pub(crate) const SHELLS_WIDTH: f32 = 400.0;
 const POLL_EVERY: Duration = Duration::from_secs(1);
 
 impl AgentTab {
-    /// The shells tab's pill (`▣ 1/3`): peach while one runs, green once all are done, red after
-    /// a failure you haven't looked at; none before a shell started.
+    /// The shells tab's pill (`▣ 1/3`): peach while one runs, its green icon alone once all are
+    /// done (chore 34), red after a failure you haven't looked at; none before a shell started.
     pub(crate) fn shells_tab(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
         let shells = self.conversation.shells();
         if shells.is_empty() {
@@ -40,6 +40,11 @@ impl AgentTab {
             Tone::Done => c.tool_ok,
             Tone::Failed => c.failed_panel,
         };
+        // All done: the count moves into the tip (chore 34).
+        let tip = match shells.tone() {
+            Tone::Done => crate::corner_tabs::done_tip(shells.counts().1, "shell", "shells"),
+            _ => "Background shells".to_string(),
+        };
         Some(
             self.corner_pill(
                 "agent-shells-tab",
@@ -48,7 +53,7 @@ impl AgentTab {
                 tab_words(shells),
                 ink,
                 BoxMenu::Shells,
-                "Background shells",
+                tip,
                 |this, _, cx| this.toggle_shells(cx),
                 c,
                 cx,

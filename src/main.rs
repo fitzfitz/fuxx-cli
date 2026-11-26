@@ -64,6 +64,7 @@ mod command_name;
 mod commit_line;
 mod composer;
 mod context_menu;
+mod corner_tabs;
 mod cursor_look;
 mod daemon;
 mod daemon_client;
