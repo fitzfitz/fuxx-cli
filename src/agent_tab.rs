@@ -3350,6 +3350,7 @@ impl AgentTab {
         }
         self.sync_lane_marks(cx);
         self.sync_shell_marks(cx);
+        self.close_empty_shells(cx);
         self.sync_draft(cx);
         if self.rows_held {
             self.rows_pending = true;

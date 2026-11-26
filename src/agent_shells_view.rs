@@ -165,6 +165,14 @@ impl AgentTab {
         cx.emit(AgentTabEvent::OpenFile(path));
     }
 
+    /// The shells popover open with no shells left (your next message took the finished ones):
+    /// it goes with its tab, so the box's keys (`/`, Esc) work again.
+    pub(crate) fn close_empty_shells(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.menu, Some(BoxMenu::Shells)) && self.conversation.shells().is_empty() {
+            self.close_menu(cx);
+        }
+    }
+
     /// A Working arc for each running shell's popover row; none for the others.
     pub(crate) fn sync_shell_marks(&mut self, cx: &mut Context<Self>) {
         let running: Vec<String> = self

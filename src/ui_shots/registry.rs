@@ -375,6 +375,7 @@ pub(super) const ORDER: &[&str] = &[
     "agent-shells-done",
     "agent-shells-failed",
     "agent-shells-popover",
+    "agent-shells-cleared",
     "agent-notice-long",
     "agent-long-chat",
     "agent-rewind",

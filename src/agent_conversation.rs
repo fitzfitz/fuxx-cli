@@ -1270,7 +1270,7 @@ impl Conversation {
     /// The process was ended from here (Force stop, a restart for a change): its subagents
     /// stop, and nothing of theirs runs or waits on (no `process_ended` follows).
     pub fn process_gone(&mut self) {
-        self.shells.gone(std::time::Instant::now());
+        self.shells_gone();
         self.stop_lanes(LaneStatus::Stopped);
         self.settle();
     }
@@ -1289,7 +1289,7 @@ impl Conversation {
         self.ended = true;
         self.outstanding = 0;
         self.busy = false;
-        self.shells.gone(std::time::Instant::now());
+        self.shells_gone();
         self.stop_lanes(LaneStatus::Ended);
         self.settle();
         let tail = stderr_tail.trim();
@@ -1396,6 +1396,13 @@ impl Conversation {
             .map(|s| s.call.clone())
             .collect();
         for call in calls {
+            self.touch_call(&call);
+        }
+    }
+
+    /// The process is gone: its shells stopped, their rows drawn again.
+    fn shells_gone(&mut self) {
+        for call in self.shells.gone(std::time::Instant::now()) {
             self.touch_call(&call);
         }
     }
@@ -1569,6 +1576,13 @@ mod tests {
         let mut c = Conversation::new();
         c.you("go".into(), Vec::new());
         c.apply(tool_started("t1"));
+        // A background Bash's call ends at once ("Command running in background …").
+        c.apply(Event::ToolFinished {
+            id: "t1".into(),
+            ok: true,
+            summary: "Command running in background".into(),
+            output: None,
+        });
         let row = c.tool_index("t1").unwrap();
         let before = c.version(row);
         c.apply(Event::ShellStarted {
@@ -1599,8 +1613,13 @@ mod tests {
             command: "npm run dev".into(),
             output: None,
         });
+        let running = c.version(row);
         c.process_gone();
         assert_eq!(c.shells().counts(), (1, 1));
+        assert!(
+            c.version(row) > running,
+            "its row stops saying it runs (the review's finding 1)"
+        );
     }
 
     fn tool_started(id: &str) -> Event {

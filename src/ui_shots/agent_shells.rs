@@ -44,6 +44,7 @@ pub(super) const SCENES: &[Scene] = &[
     scene("agent-shells-done", agent_shells_done),
     scene("agent-shells-failed", agent_shells_failed),
     scene("agent-shells-popover", agent_shells_popover),
+    scene("agent-shells-cleared", agent_shells_cleared),
 ];
 
 /// The shells the scenes run: their description, command, how long ago they started and their
@@ -247,6 +248,34 @@ pub(super) fn agent_shells_failed() {
         let _ = frame_fresh(cx, window);
         assert_eq!(tab_words(cx, tab), "1/2 \u{2715}", "{n}");
         let _ = part(cx, tab, n, "shells-tab");
+    });
+}
+
+/// All done and the popover open, then your next message: the tab goes, and its popover with it
+/// (the review's finding 2: it stayed open unseen, and `/` opened nothing).
+pub(super) fn agent_shells_cleared() {
+    shoot("agent-shells-cleared", DIMS, |n, cx, window, tab, _| {
+        let ends: Vec<String> = (0..2).map(|i| ended(i, "completed", 0)).collect();
+        run_shells(cx, tab, 2, &ends);
+        let _ = frame_fresh(cx, window);
+        click(cx, window, part(cx, tab, n, "shells-tab"));
+        let _ = frame_fresh(cx, window);
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_menu()),
+            Some(crate::agent_box::BoxMenu::Shells),
+            "{n}: open"
+        );
+        feed(cx, tab, |t, cx| t.send("Now update the docs".into(), cx));
+        let _ = frame_fresh(cx, window);
+        assert!(
+            cx.read(|cx| tab.read(cx).conversation.shells().is_empty()),
+            "{n}"
+        );
+        assert_eq!(
+            cx.read(|cx| tab.read(cx).shot_menu()),
+            None,
+            "{n}: the popover went with its tab"
+        );
     });
 }
 

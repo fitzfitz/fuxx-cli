@@ -95,11 +95,15 @@ impl Shells {
         self.failure_unseen = false;
     }
 
-    /// The agent's process is gone: what still runs is stopped (no banner).
-    pub fn gone(&mut self, now: Instant) {
+    /// The agent's process is gone: what still runs is stopped (no banner). The calls that
+    /// started them (their rows say so no more).
+    pub fn gone(&mut self, now: Instant) -> Vec<String> {
+        let mut calls = Vec::new();
         for shell in self.list.iter_mut().filter(|s| s.running()) {
             shell.ended = Some((ShellEnd::Stopped, now));
+            calls.push(shell.call.clone());
         }
+        calls
     }
 
     pub fn is_empty(&self) -> bool {
