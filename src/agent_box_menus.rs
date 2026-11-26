@@ -18,7 +18,7 @@ const LEDGER_LIST_MAX: f32 = 360.0;
 /// `dx` from the anchor's left, or its right edge `dx` from the anchor's right (positive: further
 /// right).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum MenuPlace {
+pub(crate) enum MenuPlace {
     Left(f32),
     Right(f32),
 }
@@ -39,7 +39,7 @@ impl AgentTab {
 
     /// `menu_frame`, placed by `place` against its anchor; the window's edge still pushes it
     /// back in.
-    pub(super) fn menu_frame_at(
+    pub(crate) fn menu_frame_at(
         &self,
         content: Option<AnyElement>,
         side: Option<AnyElement>,
@@ -105,6 +105,7 @@ impl AgentTab {
                                                 | BoxMenu::Usage
                                                 | BoxMenu::Clock
                                                 | BoxMenu::Plan
+                                                | BoxMenu::Shells
                                                 | BoxMenu::Mode
                                                 | BoxMenu::Attach
                                                 | BoxMenu::Ledger
@@ -809,14 +810,13 @@ impl AgentTab {
         let content = self
             .marked("plan-popover", div().child(content))
             .into_any_element();
-        // Over the chat, its right edge on the tab's, the box's edge (the 2026-11-25 chores:
-        // "should be left aligned"; the tab sits flush right, so hung from its left it would
-        // hang past the box).
+        // Over the chat, its right edge on the box's (the 2026-11-25 chores: "should be left
+        // aligned"): hung from the corner tabs' right edge (`corner_tabs`).
         self.menu_frame_at(
             Some(content),
             None,
             crate::agent_box::PLAN_WIDTH,
-            MenuPlace::Right(crate::card_view::TAB_PAD + crate::card_view::EDGE),
+            MenuPlace::Right(0.),
             cx,
         )
     }

@@ -1118,6 +1118,9 @@ impl Workspace {
                 window,
                 cx,
             ),
+            AgentTabEvent::ShellEnded { words, failed } => {
+                self.shell_ended(tab, words, *failed, cx)
+            }
             AgentTabEvent::OpenDiff(path) => self.open_file_tab(
                 path.clone(),
                 crate::layout_model::FileMode::Diff,
@@ -1412,6 +1415,55 @@ impl Workspace {
         else {
             return;
         };
+        // A short run (an agent's pause) is in the 🔔 list but makes no banner.
+        let banner = notifier::worth_a_banner(new, worked);
+        self.tell_agent(tab, ws, agent, message, body, (new, false, banner), cx);
+    }
+
+    /// Agent tab `tab`'s background shell ended (chore 16): unless you are looking at the tab,
+    /// told as a finished command is, "Background shell done" over `words`.
+    fn shell_ended(&mut self, tab: TabId, words: &str, failed: bool, cx: &mut Context<Self>) {
+        let looking = self.model.focused_tab() == Some(tab) && self.window_active;
+        if looking {
+            return;
+        }
+        let ws = self.model.locate(tab).map(|(ws, _)| ws);
+        let agent = self
+            .agents
+            .get(&tab)
+            .map(|slot| slot.label.to_string())
+            .unwrap_or_default();
+        let message = if failed {
+            "Background shell failed"
+        } else {
+            "Background shell done"
+        };
+        let body = words.to_string();
+        self.tell_agent(
+            tab,
+            ws,
+            &agent,
+            message,
+            body,
+            (Status::Done, failed, true),
+            cx,
+        );
+    }
+
+    /// Agent tab `tab`'s news in workspace `ws`, by `agent`: `message` after "—" in the
+    /// banner's title and `body` under it; the `notification` event about the tab, its 🔔
+    /// entry (`status`, `failed`) and, with `banner`, the banner (a click goes to the tab).
+    #[allow(clippy::too_many_arguments)]
+    fn tell_agent(
+        &mut self,
+        tab: TabId,
+        ws: Option<WorkspaceId>,
+        agent: &str,
+        message: &str,
+        body: String,
+        (status, failed, banner): (Status, bool, bool),
+        cx: &mut Context<Self>,
+    ) {
         let name = ws.map_or_else(
             || agent.to_string(),
             |ws| self.workspace_label(ws).to_string(),
@@ -1429,12 +1481,11 @@ impl Workspace {
             terminal: None,
             title: name,
             message: body.clone(),
-            status: Some(new),
-            failed: false,
+            status: Some(status),
+            failed,
             at: Instant::now(),
         });
-        // A short run (an agent's pause) is in the 🔔 list but makes no banner.
-        if !notifier::worth_a_banner(new, worked) {
+        if !banner {
             return;
         }
         // It names its tab, so a click goes there (the opens fixed, 2026-11-23).

@@ -72,6 +72,9 @@ mod ask_view;
 
 #[path = "agent_plan_card.rs"]
 mod plan_card;
+
+#[path = "agent_shells_view.rs"]
+mod shells_view;
 #[cfg(feature = "ui-shots")]
 pub(crate) use ask_view::ShotAsk;
 #[cfg(feature = "ui-shots")]
@@ -277,6 +280,9 @@ pub enum AgentTabEvent {
     OpenFile(PathBuf),
     /// A changed file in the turn ledger's popover (the agent activity chore): its diff tab.
     OpenDiff(PathBuf),
+    /// A background shell ended (chore 16): `words` as "Build · done in 6:40" / "Build ·
+    /// failed". The Workspace tells it (the 🔔 list, a banner) unless you are looking at the tab.
+    ShellEnded { words: String, failed: bool },
     /// A folder's pill or chip: shown in the Files tree.
     RevealInFiles(PathBuf),
 }
@@ -1573,6 +1579,10 @@ pub struct AgentTab {
     /// tools' rows (made and dropped in `after_change`, by tool id) and of the "Cultivating…" line.
     clock: Entity<MarkClock>,
     tool_marks: std::collections::HashMap<String, Entity<MarkView>>,
+    /// A Working arc for each running background shell's popover row (chore 16).
+    shell_marks: std::collections::HashMap<String, Entity<MarkView>>,
+    /// The open shells popover's reading of their last output lines (chore 16).
+    shell_poll: Option<Task<()>>,
     thinking_mark: Entity<MarkView>,
     bar_width: Rc<Cell<f32>>,
     /// Whether the box's placeholder was last set for a tab under `NARROW` (a lane's relay
@@ -2351,6 +2361,8 @@ impl AgentTab {
             modal_mark,
             clock,
             tool_marks: std::collections::HashMap::new(),
+            shell_marks: std::collections::HashMap::new(),
+            shell_poll: None,
             thinking_mark,
             bar_width: Rc::new(Cell::new(f32::MAX)),
             placeholder_narrow: false,
@@ -3278,7 +3290,11 @@ impl AgentTab {
                 }
                 _ => {}
             }
+            let shell_ending = self.shell_ending(&event);
             self.conversation.apply(event);
+            if let Some(id) = shell_ending {
+                self.tell_shell_end(&id, cx);
+            }
             // Main at work again (a turn starting, a message read, a permission asked): the
             // guess is out of date.
             if matches!(self.status(), Status::Working | Status::Waiting) {
@@ -3296,6 +3312,14 @@ impl AgentTab {
         // A Working arc for each running tool's row (spec B-B), none for the others.
         // The conversation keeps the running calls (the perf chore): no scan.
         let items = self.conversation.items();
+        // A call whose background shell still runs keeps its arc too (chore 16).
+        let shell_calls = self
+            .conversation
+            .shells()
+            .rows(Instant::now())
+            .into_iter()
+            .filter(|s| s.running())
+            .map(|s| s.call.clone());
         let running: Vec<String> = self
             .conversation
             .running_tools()
@@ -3304,6 +3328,7 @@ impl AgentTab {
                 Item::Tool { id, .. } => Some(id.clone()),
                 _ => None,
             })
+            .chain(shell_calls)
             .collect();
         self.tool_marks.retain(|id, _| running.contains(id));
         for id in running {
@@ -3313,6 +3338,7 @@ impl AgentTab {
             });
         }
         self.sync_lane_marks(cx);
+        self.sync_shell_marks(cx);
         self.sync_draft(cx);
         if self.rows_held {
             self.rows_pending = true;
@@ -3514,7 +3540,8 @@ impl AgentTab {
     /// While a tool runs, its elapsed time turns each second.
     fn keep_ticking(&mut self, cx: &mut Context<Self>) {
         let running = !self.conversation.running_tools().is_empty()
-            || self.conversation.lanes().iter().any(|l| l.status.live());
+            || self.conversation.lanes().iter().any(|l| l.status.live())
+            || self.shells_running();
         if !running {
             self.ticker = None;
             return;
@@ -3535,9 +3562,24 @@ impl AgentTab {
                             .iter()
                             .filter(|l| l.status.live())
                             .filter_map(|l| c.tool_index(&l.id));
-                        let ticking: Vec<usize> =
-                            c.running_tools().iter().copied().chain(live).collect();
-                        let any = !ticking.is_empty() || c.lanes().iter().any(|l| l.status.live());
+                        // A background shell's Bash row turns its time too (chore 16).
+                        let shells: Vec<usize> = c
+                            .shells()
+                            .rows(Instant::now())
+                            .into_iter()
+                            .filter(|s| s.running())
+                            .filter_map(|s| c.tool_index(&s.call))
+                            .collect();
+                        let ticking: Vec<usize> = c
+                            .running_tools()
+                            .iter()
+                            .copied()
+                            .chain(live)
+                            .chain(shells.iter().copied())
+                            .collect();
+                        let any = !ticking.is_empty()
+                            || c.lanes().iter().any(|l| l.status.live())
+                            || this.shells_running();
                         // The shown view's rows of them say their time again.
                         let pane = this.pane();
                         let mut rows: Vec<usize> = ticking
@@ -5764,6 +5806,7 @@ impl AgentTab {
             cx.new(|cx| MarkView::new(clock, Status::Working, px(MARK), BLACK, cx));
         self.clock = clock.clone();
         self.tool_marks.clear();
+        self.shell_marks.clear();
     }
 
     /// The pane's top bar (spec A §C): the status pill on the left; on the right what the

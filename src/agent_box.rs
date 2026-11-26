@@ -208,6 +208,8 @@ pub enum BoxMenu {
     /// The plan's tasks, over the burger tab at the folder-tab row's right (the 2026-11-24
     /// chores).
     Plan,
+    /// The background shells, over their tab beside the plan tab (chore 16).
+    Shells,
     Mode,
     Attach,
     /// The turn ledger's popover, over the status pill (the agent activity chore).
@@ -1660,7 +1662,7 @@ impl AgentTab {
                         status,
                         folder,
                         branch,
-                        (the_box, send, self.plan_tab(c, cx)),
+                        (the_box, send, self.corner_tabs(c, cx)),
                         c,
                     )),
             )
@@ -1678,7 +1680,7 @@ impl AgentTab {
         status: Option<AnyElement>,
         folder: impl IntoElement,
         branch: Option<impl IntoElement>,
-        (the_box, send, plan): (impl IntoElement, impl IntoElement, Option<AnyElement>),
+        (the_box, send, corner): (impl IntoElement, impl IntoElement, Option<AnyElement>),
         c: &Colors,
     ) -> Div {
         use crate::card_view::{EDGE, OUTER_INSET, PILL_GAP, TAB_PAD, TAB_RISE};
@@ -1721,7 +1723,7 @@ impl AgentTab {
             .border_color(edge)
             // Square under the plan tab, as the top-left is under the folder tab (the 2026-11-25
             // chores: the plan tab flush with the right edge).
-            .rounded_tr(px(if plan.is_some() { 0. } else { 15. }))
+            .rounded_tr(px(if corner.is_some() { 0. } else { 15. }))
             .rounded_b(px(OUTER_BOTTOM_RADIUS))
             .shadow(vec![shadow])
             .child(rim)
@@ -1782,35 +1784,119 @@ impl AgentTab {
                 .child(tab)
                 .child(step)
                 .child(div().flex_1().min_w(px(PLAN_TAB_GAP)))
-                .children(
-                    plan.map(|plan| {
-                        // Flush with the box's right edge, its step on its left: the folder tab
-                        // mirrored (the 2026-11-25 chores).
-                        let step = div().flex_none().mr(px(-EDGE)).size(px(16.)).child(
-                            gpui::canvas(
-                                |_, _, _| (),
-                                move |bounds, _, window, cx| {
-                                    crate::terminal_view::paint_tab_step_left(
-                                        window,
-                                        (f32::from(bounds.right()), f32::from(bounds.bottom())),
-                                        outer,
-                                        edge,
-                                        cx,
-                                    )
-                                },
-                            )
-                            .size_full(),
-                        );
-                        [
-                            step.into_any_element(),
-                            self.marked("plan-tab-shell", self.plan_tab_shell(plan, outer, edge))
-                                .into_any_element(),
-                        ]
-                    })
-                    .into_iter()
-                    .flatten(),
-                ),
+                .children(corner),
         )
+    }
+
+    /// The tabs at the folder-tab row's right, flush with the box's edge (the folder tab
+    /// mirrored, its step on their left): the shells tab (chore 16) then the plan tab, in one
+    /// tab, with the popover of either hung from the group's right edge; none without either.
+    fn corner_tabs(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::card_view::{EDGE, PILL_GAP, TAB_PAD};
+        let pills: Vec<AnyElement> = [self.shells_tab(c, cx), self.plan_tab(c, cx)]
+            .into_iter()
+            .flatten()
+            .collect();
+        if pills.is_empty() {
+            return None;
+        }
+        let (outer, edge) = (hsla(c.outer), hsla(c.outer_edge));
+        let step = div().flex_none().mr(px(-EDGE)).size(px(16.)).child(
+            gpui::canvas(
+                |_, _, _| (),
+                move |bounds, _, window, cx| {
+                    crate::terminal_view::paint_tab_step_left(
+                        window,
+                        (f32::from(bounds.right()), f32::from(bounds.bottom())),
+                        outer,
+                        edge,
+                        cx,
+                    )
+                },
+            )
+            .size_full(),
+        );
+        let shell = self.marked(
+            "corner-tabs",
+            self.plan_tab_shell(
+                div()
+                    .flex()
+                    .gap(px(PILL_GAP))
+                    .children(pills)
+                    .into_any_element(),
+                outer,
+                edge,
+            ),
+        );
+        // Over the chat, its right edge on the box's: hung from the group's top right, the
+        // pills' top (`TAB_PAD` in), so it sits where the plan's always did.
+        let popover = match self.menu {
+            Some(BoxMenu::Plan) => Some(self.plan_popover(c, cx)),
+            Some(BoxMenu::Shells) => Some(self.shells_popover(c, cx)),
+            _ => None,
+        };
+        Some(
+            div()
+                .relative()
+                .flex_none()
+                .flex()
+                .items_end()
+                .child(step)
+                .child(shell)
+                .children(popover.map(|p| div().absolute().top(px(TAB_PAD)).right_0().child(p)))
+                .into_any_element(),
+        )
+    }
+
+    /// One pill of the corner tabs (the plan's `☰ 4/6`, the shells' `▣ 1/3`): `icon` and
+    /// `words` in `ink`, lit while its popover is open, `tip` on hover; a click toggles it (not
+    /// the click that just closed it).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn corner_pill(
+        &self,
+        id: &'static str,
+        part: &'static str,
+        icon: crate::icons::Icon,
+        words: String,
+        ink: alacritty_terminal::vte::ansi::Rgb,
+        open: bool,
+        tip: &'static str,
+        toggle: fn(&mut Self, &mut Window, &mut Context<Self>),
+        c: &Colors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hover = c.pill_hover;
+        self.marked(
+            part,
+            div()
+                .id(id)
+                .relative()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .h(px(crate::card_view::PILL_H))
+                .px(px(7.))
+                .rounded(px(crate::card_view::PILL_H / 2.))
+                .text_size(px(12.))
+                .text_color(hsla(ink))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hsla(hover)))
+                .when(open, |d| d.bg(hsla(hover)))
+                .child(crate::icons::icon(icon, px(13.), hsla(ink)))
+                .child(SharedString::from(words))
+                .tooltip(move |_, cx| cx.new(|_| crate::sidebar_toggle::Tip(tip.into())).into())
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    let pressed = match event {
+                        ClickEvent::Mouse(click) => Some(click.down.position),
+                        _ => None,
+                    };
+                    let closed_at = this.chip_closed_at.take();
+                    if pressed.is_none() || closed_at != pressed {
+                        toggle(this, window, cx);
+                    }
+                })),
+        )
+        .into_any_element()
     }
 
     /// The plan tab at the folder-tab row's right (the 2026-11-24 chores, your pick "burger +
@@ -1831,8 +1917,7 @@ impl AgentTab {
             .child(plan)
     }
 
-    /// The burger tab's pill (`☰ 4/6`), and the plan's tasks over it while open; none without a
-    /// task list (`plan_progress::shows`).
+    /// The burger tab's pill (`☰ 4/6`); none without a task list (`plan_progress::shows`).
     fn plan_tab(&self, c: &Colors, cx: &mut Context<Self>) -> Option<AnyElement> {
         use crate::plan_progress::{counts, shows};
         if !shows(&self.plan) {
@@ -1844,50 +1929,19 @@ impl AgentTab {
         } else {
             format!("{done}/{all}")
         };
-        let hover = c.pill_hover;
         let open = matches!(self.menu, Some(BoxMenu::Plan));
-        let pill = self
-            .marked(
-                "plan-tab",
-                div()
-                    .id("agent-plan-tab")
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap(px(5.))
-                    .h(px(crate::card_view::PILL_H))
-                    .px(px(7.))
-                    .rounded(px(crate::card_view::PILL_H / 2.))
-                    .text_size(px(12.))
-                    .text_color(hsla(c.dim))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hsla(hover)))
-                    .when(open, |d| d.bg(hsla(hover)))
-                    .child(crate::icons::icon(
-                        crate::icons::Icon::Menu,
-                        px(13.),
-                        hsla(c.dim),
-                    ))
-                    .child(SharedString::from(words))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| {
-                            crate::sidebar_toggle::Tip("Plan progress  \u{2325}\u{2318}P".into())
-                        })
-                        .into()
-                    })
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                        let pressed = match event {
-                            ClickEvent::Mouse(click) => Some(click.down.position),
-                            _ => None,
-                        };
-                        let closed_at = this.chip_closed_at.take();
-                        if pressed.is_none() || closed_at != pressed {
-                            this.toggle_plan(&crate::agent_tab::TogglePlan, window, cx);
-                        }
-                    })),
-            )
-            .when(open, |d| d.child(self.plan_popover(c, cx)));
-        Some(pill.into_any_element())
+        Some(self.corner_pill(
+            "agent-plan-tab",
+            "plan-tab",
+            crate::icons::Icon::Menu,
+            words,
+            c.dim,
+            open,
+            "Plan progress  \u{2325}\u{2318}P",
+            |this, window, cx| this.toggle_plan(&crate::agent_tab::TogglePlan, window, cx),
+            c,
+            cx,
+        ))
     }
 
     /// The `/` list, over the box while it is open: the agent's commands, skills and sub-agents
@@ -2235,7 +2289,7 @@ impl AgentTab {
 }
 
 #[path = "agent_box_menus.rs"]
-mod menus;
+pub(crate) mod menus;
 
 /// The scenes' hooks for the folder picker.
 #[cfg(feature = "ui-shots")]

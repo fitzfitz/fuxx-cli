@@ -684,7 +684,15 @@ impl AgentTab {
             (None, Some(words)) => words,
             (None, None) => Rc::new(crate::agent_step_words::row_words(item)),
         };
-        let right: (String, Rgb) = if *running {
+        // A Bash that started a background shell still running (chore 16): it reads "running in
+        // the background · 4:12", under the Working arc, until the shell ends.
+        let shell = self.conversation.shells().running_for_call(id);
+        let right: (String, Rgb) = if let Some(shell) = shell {
+            (
+                crate::agent_shells::row_words(shell.elapsed(look.now)),
+                c.panel_dim,
+            )
+        } else if *running {
             let since = self.tool_times.get(id).map_or(Duration::ZERO, |(t, _)| {
                 look.now.saturating_duration_since(*t)
             });
@@ -712,7 +720,7 @@ impl AgentTab {
                 .into_any_element()
         };
         use crate::agent_step_words::{RowMark, row_mark};
-        let status: AnyElement = match row_mark(*running, *ok, &activity) {
+        let status: AnyElement = match row_mark(*running || shell.is_some(), *ok, &activity) {
             RowMark::Running => match self.tool_marks.get(id) {
                 Some(mark) => mark.clone().into_any_element(),
                 None => dot(c.todo_active),
